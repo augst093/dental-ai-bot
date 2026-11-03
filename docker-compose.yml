@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  dental_bot:
+    build: .
+    container_name: dental_ai_bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      # Сохранение базы данных SQLite между перезапусками
+      - ./data:/app/data
+      # Опционально: подключение credentials.json для Google Таблиц
+      - ./credentials.json:/app/credentials.json:ro
+    environment:
+      - TZ=Asia/Tashkent

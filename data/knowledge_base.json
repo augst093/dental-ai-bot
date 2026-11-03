@@ -1,0 +1,244 @@
+{
+  "clinic": {
+    "name": "DentaLux Tashkent",
+    "tagline_ru": "Премиальная цифровая стоматология и эстетическая медицина",
+    "tagline_uz": "Toshkentdagi premium raqamli stomatologiya va estetik tibbiyot markazi",
+    "city": "Ташкент / Toshkent",
+    "district": "Мирабадский район / Mirobod tumani",
+    "address_ru": "г. Ташкент, Мирабадский район, ул. Афросиёб, 12Б",
+    "address_uz": "Toshkent sh., Mirobod tumani, Afrosiyob ko'chasi, 12B",
+    "landmarks_ru": "метро Ойбек (300 метров), напротив гостиницы Grand Mir Hotel, рядом с посольством РФ",
+    "landmarks_uz": "Oybek metrosi (300 metr), Grand Mir mehmonxonasi ro'parasi",
+    "geolocation": "41.295480, 69.273110",
+    "yandex_maps_url": "https://yandex.uz/maps/-/CDuWjF8A",
+    "phones": [
+      "+998 71 200 44 88",
+      "+998 90 999 44 88"
+    ],
+    "working_hours": {
+      "ru": "Пн - Сб: 09:00 - 20:00, Воскресенье: выходной (дежурный врач по срочной боли)",
+      "uz": "Dush - Shan: 09:00 - 20:00, Yakshanba: dam olish kuni (og'ir og'riqlar uchun navbatchi shifokor)"
+    },
+    "parking": "Собственная охраняемая парковка для пациентов клиники (bepul avtoturargoh)"
+  },
+
+  "special_offer": {
+    "title_ru": "Акция месяца: Комплексная 3D-диагностика и консультация главного врача — БЕСПЛАТНО",
+    "title_uz": "Oy aksiyasi: Kompleks 3D-diagnostika va bosh shifokor ko'rigi — BEPUL",
+    "details_ru": "При записи через Telegram-бот: осмотр главного врача + компьютерная 3D-томография (КТ) / панорамный снимок зубов (обычная цена 350 000 сум) — 0 сум!",
+    "details_uz": "Telegram-bot orqali yozilganda: bosh shifokor ko'rigi + 3D-kompyuter tomografiyasi (KT) rentgen (odatiy narxi 350 000 so'm) — mutlaqo 0 so'm!",
+    "conditions": "Только при предварительной записи через Telegram-бота"
+  },
+
+  "payment_options": {
+    "methods_ru": "Наличные (сум, доллары по курсу ЦБ), пластиковые карты Uzcard, Humo, Visa, Mastercard",
+    "methods_uz": "Naqd pul, Uzcard, Humo, Visa, Mastercard",
+    "installments_ru": "Беспроцентная рассрочка 0% до 12 месяцев через банки-партнеры: Uzum Nasiya, Anorbank, Zoodpay (без скрытых переплат и комиссий)",
+    "installments_uz": "0% muddatli to'lov (12 oygacha) hamkorlar orqali: Uzum Nasiya, Anorbank, Zoodpay (foizsiz va ortiqcha to'lovlarsiz)"
+  },
+
+  "services": [
+    {
+      "id": "orthodontics_brackets",
+      "category_ru": "Брекеты и исправление прикуса",
+      "category_uz": "Breketlar va tishlamni to'g'irlash",
+      "items": [
+        {
+          "name_ru": "Металлические самолигирующие брекеты Damon Q2 (США)",
+          "name_uz": "Damon Q2 metall o'zi ligirlanuvchi breketlar (AQSh)",
+          "price_uzs": "от 7 500 000 сум за 1 челюсть",
+          "price_usd": "approx. $600",
+          "description_ru": "Мировой золотой стандарт ортодонтии. Быстрое перемещение зубов, визиты к врачу 1 раз в 1.5-2 месяца, без удаления здоровых зубов.",
+          "description_uz": "Ortodontiyaning jahon standarti. Tishlarni tez va og'riqsiz harakatlantirish, shifokorga har 1.5-2 oyda 1 marta kelish."
+        },
+        {
+          "name_ru": "Керамические / сапфировые эстетические брекеты Damon Clear (США)",
+          "name_uz": "Damon Clear sapfir / keramika estetik breketlar (AQSh)",
+          "price_uzs": "от 11 000 000 сум за 1 челюсть",
+          "price_usd": "approx. $880",
+          "description_ru": "Полностью прозрачные, сливаются с цветом эмали, практически незаметны на зубах при улыбке.",
+          "description_uz": "Butunlay shaffof, tish emali bilan bir xil ko'rinadi, jilmayganda deyarli ko'rinmaydi."
+        }
+      ]
+    },
+    {
+      "id": "orthodontics_aligners",
+      "category_ru": "Элайнеры (невидимые капы)",
+      "category_uz": "Elaynerlar (ko'rinmas kapalar)",
+      "items": [
+        {
+          "name_ru": "Элайнеры Spark / 3D Smile (полный курс)",
+          "name_uz": "Spark / 3D Smile elaynerlari (to'liq kurs)",
+          "price_uzs": "от 15 000 000 до 35 000 000 сум за полный кейс",
+          "price_usd": "от $1,200 до $2,800",
+          "description_ru": "Абсолютно прозрачные съемные капы. Никто не заметит, что вы исправляете зубы. Снимаются во время еды и чистки зубов.",
+          "description_uz": "Mutlaqo shaffof yechiladigan kapalar. Hech kim sezmaydi. Ovqatlanish va tish yuvish paytida yechib qo'yiladi."
+        }
+      ]
+    },
+    {
+      "id": "implantation",
+      "category_ru": "Имплантация зубов",
+      "category_uz": "Tish implantatsiyasi",
+      "items": [
+        {
+          "name_ru": "Имплант Osstem (Южная Корея) 'под ключ' с установкой",
+          "name_uz": "Osstem implanti (Janubiy Koreya) o'rnatish bilan",
+          "price_uzs": "от 4 200 000 сум ($330)",
+          "price_usd": "$330",
+          "description_ru": "Самая популярная и надежная система в СНГ. Приживаемость 98.8%, пожизненная заводская гарантия.",
+          "description_uz": "Eng mashhur va ishonchli tizim. Ildiz otish ehtimoli 98.8%, umrbod zavod kafolati."
+        },
+        {
+          "name_ru": "Премиум-имплант Straumann (Швейцария) с ускоренным приживлением SLActive",
+          "name_uz": "Straumann premium implant (Shveytsariya) SLActive",
+          "price_uzs": "от 8 500 000 сум ($670)",
+          "price_usd": "$670",
+          "description_ru": "Мировой №1 в имплантологии. Приживается всего за 3-4 недели, подходит даже при сахарном диабете и дефиците кости.",
+          "description_uz": "Dunyoda 1-o'rindagi Shveytsariya tizimi. 3-4 haftada ildiz otadi, qandli diabetda ham qo'llash mumkin."
+        },
+        {
+          "name_ru": "Имплантация All-on-4 / All-on-6 (все зубы за 1-3 дня)",
+          "name_uz": "All-on-4 / All-on-6 (barcha tishlar 1-3 kunda)",
+          "price_uzs": "от 38 000 000 сум за челюсть",
+          "price_usd": "approx. $3,000",
+          "description_ru": "Полное восстановление зубного ряда при полном отсутствии зубов. Несъемный протез с первого дня.",
+          "description_uz": "Tishlar umuman bo'lmaganda butun jag'ni 1-3 kunda tiklash."
+        }
+      ]
+    },
+    {
+      "id": "veneers_aesthetics",
+      "category_ru": "Виниры и эстетическая стоматология",
+      "category_uz": "Vinirlar va estetik stomatologiya",
+      "items": [
+        {
+          "name_ru": "Керамические ультратонкие виниры E.max (Германия / Лихтенштейн)",
+          "name_uz": "E.max ultrayupqa keramika vinirlari (Germaniya)",
+          "price_uzs": "от 2 800 000 сум за 1 зуб",
+          "price_usd": "approx. $220 за единицу",
+          "description_ru": "Толщина всего 0.3 мм, минимальная обработка зуба. Натуральная прозрачность, никогда не темнеют от кофе и чая. Срок службы 15+ лет.",
+          "description_uz": "Qalinligi bor-yo'g'i 0.3 mm, tishni minimal yonish. Hech qachon qoraymaydi, xizmat muddati 15+ yil."
+        },
+        {
+          "name_ru": "Циркониевые коронки Prettau Zirkonzahn",
+          "name_uz": "Tsirkon qoplamalar (Zirkonzahn)",
+          "price_uzs": "от 1 900 000 сум за 1 единицу",
+          "price_usd": "approx. $150",
+          "description_ru": "Сверхпрочный безметалловый цирконий, неотличимый от родных зубов.",
+          "description_uz": "Metallsiz o'ta mustahkam tsirkon, tabiiy tishdan ajratib bo'lmaydi."
+        }
+      ]
+    },
+    {
+      "id": "teeth_whitening",
+      "category_ru": "Отбеливание зубов",
+      "category_uz": "Tishlarni oqartirish",
+      "items": [
+        {
+          "name_ru": "Аппаратное холодное отбеливание Beyond Polus Ultra / Philips Zoom 4",
+          "name_uz": "Beyond Polus / Philips Zoom 4 apparat oqartirish",
+          "price_uzs": "2 200 000 сум за обе челюсти (1 сеанс 45 мин)",
+          "price_usd": "approx. $175",
+          "description_ru": "Осветление на 6-8 тонов за один визит. Холодный свет исключает перегрев нерва и чувствительность. Включает реминерализирующую терапию.",
+          "description_uz": "1 marta kelganda 6-8 tongacha oqartirish. Sovuq nur emal va asabni qizdirmaydi, sezuvchanlik tug'dirmaydi."
+        }
+      ]
+    },
+    {
+      "id": "hygiene_therapy",
+      "category_ru": "Терапия, гигиена и лечение кариеса",
+      "category_uz": "Terapiya, gigiyena va karies davolash",
+      "items": [
+        {
+          "name_ru": "Комплексная гигиена полости рта (Ультразвук + AirFlow + полировка)",
+          "name_uz": "Kompleks tish tozalash (Ultratovush + AirFlow + ftorlash)",
+          "price_uzs": "550 000 сум",
+          "price_usd": "approx. $45",
+          "description_ru": "Полное удаление зубного камня, пигментного налета от чая/сигарет, укрепление эмали фтором.",
+          "description_uz": "Toshlar va qoraygan dog'larni to'liq tozalash, emalni mustahkamlash."
+        },
+        {
+          "name_ru": "Лечение кариеса с художественной реставрацией Estelite Asteria (Япония)",
+          "name_uz": "Karies davolash va badiiy restavratsiya (Yaponiya)",
+          "price_uzs": "от 450 000 до 850 000 сум",
+          "price_usd": "$35 - $65",
+          "description_ru": "Анатомическое восстановление бугров зуба, невидимая граница пломбы, полная изоляция коффердамом.",
+          "description_uz": "Tish shaklini mukammal tiklash, plomba chegarasi ko'rinmaydi, kofferdam bilan himoyalash."
+        },
+        {
+          "name_ru": "Лечение корневых каналов под дентальным микроскопом Carl Zeiss",
+          "name_uz": "Carl Zeiss mikroskopi ostida tish ildiz kanallarini davolash",
+          "price_uzs": "от 900 000 сум за зуб",
+          "price_usd": "от $70",
+          "description_ru": "Спасаем даже безнадежные зубы благодаря 25-кратному увеличению немецкого микроскопа Zeiss.",
+          "description_uz": "Nemis mikroskopi ostida 25 barobar kattalashtirib, eng murakkab tishlarni ham saqlab qolish."
+        }
+      ]
+    },
+    {
+      "id": "pediatric",
+      "category_ru": "Детская стоматология",
+      "category_uz": "Bolalar stomatologiyasi",
+      "items": [
+        {
+          "name_ru": "Лечение молочного зуба в игровой форме без слез и боли",
+          "name_uz": "Bolalar tishini og'riqsiz va qo'rquvsiz davolash",
+          "price_uzs": "от 250 000 сум",
+          "price_usd": "от $20",
+          "description_ru": "Специальный детский кабинет с мультфильмами, подарками после приема и бережной психологической адаптацией.",
+          "description_uz": "Multfilmlar, sovg'alar va muloyim psixologik yondashuv bilan bolalar xonasi."
+        }
+      ]
+    }
+  ],
+
+  "safety_and_sterilization": {
+    "ru": "5-ступенчатая стерилизация европейского уровня по протоколам 'Анти-СПИД' и 'Анти-Гепатит'. Автоклавы класса B (Melag, Германия). Индивидуальные крафт-пакеты со стерильным инструментом вскрываются строго в присутствии пациента.",
+    "uz": "Yevropa standartlari bo'yicha 5 bosqichli 'Anti-OITS' va 'Anti-Gepatit' sterilizatsiya. Nemis avtoklavlari (Melag). Har bir bemor uchun alohida kraft-paket shaxsan uning ko'z o'ngida ochiladi."
+  },
+
+  "pain_free_promise": {
+    "ru": "100% лечение без боли: предварительное обезболивание десны гелем с фруктовым вкусом + компьютерная анестезия тончайшими иглами. Пациенты не чувствуют даже сам укол.",
+    "uz": "100% og'riqsiz davolash: avval milklarga yoqimli mevali gel surtiladi, so'ngra ingichka igna bilan kompyuter anesteziyasi qilinadi. Bemor ukol og'rig'ini ham sezmaydi."
+  },
+
+  "doctors": [
+    {
+      "name_ru": "Доктор Сардор Каримов",
+      "name_uz": "Doktor Sardor Karimov",
+      "specialty_ru": "Главный врач, челюстно-лицевой хирург, имплантолог высшей категории",
+      "specialty_uz": "Bosh shifokor, jag'-yuz jarrohi, oliy toifali implantolog",
+      "experience_years": 16,
+      "certifications_ru": "Член ITI (International Team for Implantology), стажировки в Швейцарии (Базель), Южной Корее (Сеул) и Германии. Более 4 500 успешно установленных имплантов.",
+      "certifications_uz": "ITI a'zosi, Shveytsariya, Janubiy Koreya va Germaniyada malaka oshirgan. 4 500 dan ortiq muvaffaqiyatli implantlar."
+    },
+    {
+      "name_ru": "Доктор Мадина Усманова",
+      "name_uz": "Doktor Madina Usmonova",
+      "specialty_ru": "Ведущий ортодонт, специалист по брекетам Damon и элайнерам Spark",
+      "specialty_uz": "Yetakchi ortodont, Damon breketlari va Spark elaynerlari bo'yicha mutaxassis",
+      "experience_years": 11,
+      "certifications_ru": "Сертифицированный специалист Ormco и 3D Smile. Более 1 300 исправленных улыбок у взрослых и подростков.",
+      "certifications_uz": "Ormco va 3D Smile xalqaro sertifikati sohibasi. 1 300 dan ortiq chiroyli tabassumlar yaratgan."
+    },
+    {
+      "name_ru": "Доктор Тимур Рахимов",
+      "name_uz": "Doktor Timur Rahimov",
+      "specialty_ru": "Стоматолог-ортопед, мастер эстетической реставрации и виниров",
+      "specialty_uz": "Ortoped-stomatolog, estetik vinirlar ustasi",
+      "experience_years": 13,
+      "certifications_ru": "Эксперт по керамике E.max и цифровому протоколу Smile Design. Создает идеальную натуральную улыбку.",
+      "certifications_uz": "E.max keramikasi va raqamli tabassum dizayni mutaxassisi."
+    },
+    {
+      "name_ru": "Доктор Нилуфар Ахмедова",
+      "name_uz": "Doktor Nilufar Ahmedova",
+      "specialty_ru": "Детский стоматолог, терапевт",
+      "specialty_uz": "Bolalar shifokori, terapevt",
+      "experience_years": 8,
+      "certifications_ru": "Умеет находить общий язык с самыми боязливыми малышами. Лечение без слез.",
+      "certifications_uz": "Hatto eng qo'rqoq bolajonlar bilan ham tez do'stlashib, mehr bilan davolaydi."
+    }
+  ]
+}
