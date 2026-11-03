@@ -8,7 +8,10 @@ from aiogram.types import (
     InlineKeyboardButton,
     ReplyKeyboardMarkup,
     KeyboardButton,
+    WebAppInfo,
 )
+
+MINIAPP_URL = "https://dentalminiapp.vercel.app"
 
 # 1. Инлайн-клавиатура первичного выбора языка
 def get_language_inline_keyboard() -> InlineKeyboardMarkup:
@@ -27,6 +30,7 @@ def get_language_inline_keyboard() -> InlineKeyboardMarkup:
 # Тексты кнопок главного меню на 3 языках
 MENU_BUTTON_TEXTS = {
     "ru": {
+        "miniapp": "✨ Каталог Mini App",
         "booking": "📅 Записаться на приём",
         "services": "🦷 Услуги и цены",
         "contacts": "📍 Адрес и контакты",
@@ -36,6 +40,7 @@ MENU_BUTTON_TEXTS = {
         "contact_phone": "📱 Отправить мой телефон",
     },
     "uz": {
+        "miniapp": "✨ Mini App katalogi",
         "booking": "📅 Qabulga yozilish",
         "services": "🦷 Xizmatlar va narxlar",
         "contacts": "📍 Manzil va aloqa",
@@ -45,6 +50,7 @@ MENU_BUTTON_TEXTS = {
         "contact_phone": "📱 Telefon raqamimni yuborish",
     },
     "en": {
+        "miniapp": "✨ Mini App Showcase",
         "booking": "📅 Book an Appointment",
         "services": "🦷 Services & Prices",
         "contacts": "📍 Address & Contacts",
@@ -61,6 +67,7 @@ def get_main_menu_keyboard(lang: str = "ru") -> ReplyKeyboardMarkup:
     t = MENU_BUTTON_TEXTS.get(lang, MENU_BUTTON_TEXTS["ru"])
     kb = [
         [
+            KeyboardButton(text=t["miniapp"], web_app=WebAppInfo(url=MINIAPP_URL)),
             KeyboardButton(text=t["booking"]),
         ],
         [
@@ -88,6 +95,7 @@ def get_main_menu_keyboard(lang: str = "ru") -> ReplyKeyboardMarkup:
 def get_services_catalog_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
     labels = {
         "ru": {
+            "miniapp": "✨ Открыть интерактивную витрину (Mini App)",
             "brackets": "🦷 Брекеты Damon (США)",
             "aligners": "✨ Элайнеры (невидимые капы)",
             "implants": "🔩 Имплантация Osstem / Straumann",
@@ -98,6 +106,7 @@ def get_services_catalog_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
             "book": "📅 Записаться на бесплатный осмотр",
         },
         "uz": {
+            "miniapp": "✨ Interaktiv vitrina (Mini App)",
             "brackets": "🦷 Damon breketlari (AQSh)",
             "aligners": "✨ Elaynerlar (shaffof kapalar)",
             "implants": "🔩 Osstem / Straumann implantlari",
@@ -108,6 +117,7 @@ def get_services_catalog_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
             "book": "📅 Bepul ko'rikka yozilish",
         },
         "en": {
+            "miniapp": "✨ Open Interactive Showcase (Mini App)",
             "brackets": "🦷 Damon Braces (USA)",
             "aligners": "✨ Clear Aligners",
             "implants": "🔩 Osstem / Straumann Implants",
@@ -120,6 +130,9 @@ def get_services_catalog_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
     }
     lbl = labels.get(lang, labels["ru"])
     buttons = [
+        [
+            InlineKeyboardButton(text=lbl["miniapp"], web_app=WebAppInfo(url=MINIAPP_URL)),
+        ],
         [
             InlineKeyboardButton(text=lbl["brackets"], callback_data="svc:brackets"),
         ],

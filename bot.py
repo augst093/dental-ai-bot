@@ -7,6 +7,7 @@
 """
 
 import sys
+import json
 import asyncio
 import logging
 from typing import Optional
@@ -14,6 +15,7 @@ from typing import Optional
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command, CommandStart
 from aiogram.enums import ParseMode
+from aiogram.types import WebAppInfo, MenuButtonWebApp
 
 from config import config
 from database import db
@@ -24,6 +26,7 @@ from keyboards import (
     get_service_detail_keyboard,
     get_contacts_inline_keyboard,
     MENU_BUTTON_TEXTS,
+    MINIAPP_URL,
 )
 from templates import (
     LANGUAGE_SELECT_TEXT,
@@ -769,6 +772,112 @@ async def handle_user_arbitrary_text(message: types.Message):
 
 
 # =========================================================================
+# 7.5. ОБРАБОТКА ДАННЫХ ИЗ TELEGRAM MINI APP
+# =========================================================================
+
+@dp.message(F.web_app_data)
+async def handle_web_app_data(message: types.Message):
+    """
+    Обработка данных онлайн-записи из Telegram Mini App (DentaLux Showcase).
+    """
+    user = message.from_user
+    data_raw = message.web_app_data.data if message.web_app_data else "{}"
+    lang = await get_user_lang(user.id if user else 0)
+    
+    logger.info(f"Получены данные из Mini App от {user.id if user else '?'}: {data_raw}")
+    
+    try:
+        data = json.loads(data_raw)
+        name = data.get("name") or (f"{user.first_name or ''} {user.last_name or ''}".strip() if user else "Пациент")
+        phone = data.get("phone") or "Не указан"
+        service = data.get("service") or "Консультация"
+        doctor = data.get("doctor") or "Любой специалист"
+        date = data.get("date") or "Ближайшее время"
+        time = data.get("time") or ""
+        preferred_time = f"{date} {time}".strip()
+        summary = f"Запись через Mini App. Врач: {doctor}"
+        
+        # 1. Сохраняем в локальную базу SQLite
+        lead_id = await db.save_lead(
+            telegram_id=user.id if user else 0,
+            client_name=name,
+            phone=phone,
+            service=service,
+            preferred_time=preferred_time,
+            summary=summary,
+            language=lang,
+        )
+        
+        # 2. Отправляем карточку в группу администраторов
+        await notifier.notify_new_lead(
+            lead_id=lead_id,
+            telegram_id=user.id if user else 0,
+            client_name=name,
+            phone=phone,
+            service=service,
+            preferred_time=preferred_time,
+            summary=summary,
+            language=lang,
+            username=user.username if user else None,
+        )
+        
+        # 3. Синхронизируем с Google Sheets
+        await sheets_service.append_lead(
+            lead_id=lead_id,
+            time_str=get_tashkent_time_str(),
+            name=name,
+            phone=phone,
+            service=service,
+            preferred_time=preferred_time,
+            summary=summary,
+            language=lang,
+            username=user.username if user else None,
+        )
+        
+        # 4. Отправляем подтверждение пациенту
+        confirm_text = {
+            "ru": (
+                "🎉 <b>Ваша запись через Mini App успешно принята!</b>\n\n"
+                f"👤 <b>Имя:</b> {name}\n"
+                f"📞 <b>Телефон:</b> <code>{phone}</code>\n"
+                f"🦷 <b>Услуга:</b> {service}\n"
+                f"👨‍⚕️ <b>Врач:</b> {doctor}\n"
+                f"📅 <b>Желаемое время:</b> {preferred_time}\n\n"
+                "📞 Наш администратор перезвонит вам в течение 10–15 минут для подтверждения бронирования кабинета."
+            ),
+            "uz": (
+                "🎉 <b>Mini App orqali arizangiz qabul qilindi!</b>\n\n"
+                f"👤 <b>Ism:</b> {name}\n"
+                f"📞 <b>Telefon:</b> <code>{phone}</code>\n"
+                f"🦷 <b>Xizmat:</b> {service}\n"
+                f"👨‍⚕️ <b>Shifokor:</b> {doctor}\n"
+                f"📅 <b>Vaqt:</b> {preferred_time}\n\n"
+                "📞 Qabul vaqtini tasdiqlash uchun administratorimiz 10–15 daqiqa ichida siz bilan bog'lanadi."
+            ),
+            "en": (
+                "🎉 <b>Your booking via Mini App has been received!</b>\n\n"
+                f"👤 <b>Name:</b> {name}\n"
+                f"📞 <b>Phone:</b> <code>{phone}</code>\n"
+                f"🦷 <b>Service:</b> {service}\n"
+                f"👨‍⚕️ <b>Doctor:</b> {doctor}\n"
+                f"📅 <b>Preferred time:</b> {preferred_time}\n\n"
+                "📞 Our administrator will call you within 10–15 minutes to confirm the appointment."
+            ),
+        }
+        await message.answer(
+            text=confirm_text.get(lang, confirm_text["ru"]),
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_main_menu_keyboard(lang),
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при обработке WebApp данных: {e}", exc_info=True)
+        await message.answer(
+            "✅ Ваша заявка успешно получена! Администратор свяжется с вами в ближайшее время.",
+            reply_markup=get_main_menu_keyboard(lang),
+        )
+
+
+# =========================================================================
 # 8. ТОЧКА ВХОДА И ЗАПУСК БОТА
 # =========================================================================
 
@@ -789,6 +898,18 @@ async def main():
 
     bot = Bot(token=config.BOT_TOKEN)
     notifier.set_bot(bot)
+
+    # Настройка кнопки Web App в меню чата (слева от поля ввода)
+    try:
+        await bot.set_chat_menu_button(
+            menu_button=MenuButtonWebApp(
+                text="✨ Mini App",
+                web_app=WebAppInfo(url=MINIAPP_URL),
+            )
+        )
+        logger.info(f"MenuButtonWebApp настроена на {MINIAPP_URL}")
+    except Exception as e:
+        logger.warning(f"Не удалось установить MenuButtonWebApp: {e}")
 
     # Пропуск накопившихся апдейтов перед стартом
     await bot.delete_webhook(drop_pending_updates=True)
