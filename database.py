@@ -65,8 +65,45 @@ class Database:
                     language TEXT DEFAULT 'ru',
                     status TEXT DEFAULT 'new',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (telegram_id) REFERENCES users (telegram_id)
+                );
+                """
+            )
+
+            # Таблица записей на прием (Appointment Lifecycle)
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS appointments (
+                    id TEXT PRIMARY KEY,
+                    telegram_id INTEGER,
+                    client_name TEXT NOT NULL,
+                    phone TEXT NOT NULL,
+                    doctor TEXT,
+                    service TEXT,
+                    date_time TEXT NOT NULL,
+                    status TEXT DEFAULT 'pending',
+                    source TEXT DEFAULT 'bot',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                """
+            )
+
+            # Таблица напоминаний (Persistent, Restart-Safe Reminder Engine)
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS reminders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    appointment_id TEXT NOT NULL,
+                    type TEXT NOT NULL,
+                    due_at TIMESTAMP NOT NULL,
+                    sent_at TIMESTAMP DEFAULT NULL,
+                    status TEXT DEFAULT 'pending',
+                    attempt_count INTEGER DEFAULT 0,
+                    last_error TEXT DEFAULT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(appointment_id, type)
                 );
                 """
             )
@@ -264,6 +301,138 @@ class Database:
                 LIMIT ?
                 """,
                 (limit,),
+            )
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+    async def save_appointment(
+        self,
+        appointment_id: str,
+        telegram_id: int,
+        client_name: str,
+        phone: str,
+        doctor: str,
+        service: str,
+        date_time: str,
+        status: str = "pending",
+        source: str = "bot",
+    ) -> bool:
+        """Сохраняет запись на приём в SQLite."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT OR REPLACE INTO appointments (
+                    id, telegram_id, client_name, phone, doctor, service, date_time, status, source, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """,
+                (appointment_id, telegram_id, client_name, phone, doctor, service, date_time, status, source),
+            )
+            await db.commit()
+            return True
+
+    async def get_appointment(self, appointment_id: str) -> Optional[Dict[str, Any]]:
+        """Возвращает данные записи по её ID."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM appointments WHERE id = ?", (appointment_id,))
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def update_appointment_status(self, appointment_id: str, status: str) -> bool:
+        """Обновляет статус записи (pending, confirmed, reschedule_requested, cancelled, completed, no_show)."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "UPDATE appointments SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (status, appointment_id),
+            )
+            if status == "cancelled":
+                await db.execute(
+                    "UPDATE reminders SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE appointment_id = ? AND status = 'pending'",
+                    (appointment_id,),
+                )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def schedule_reminder(
+        self,
+        appointment_id: str,
+        reminder_type: str,
+        due_at_iso: str,
+    ) -> bool:
+        """Планирует напоминание (24h или 2h). Перезапуск-безопасно и идемпотентно."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT OR IGNORE INTO reminders (appointment_id, type, due_at, status)
+                VALUES (?, ?, ?, 'pending')
+                """,
+                (appointment_id, reminder_type, due_at_iso),
+            )
+            await db.commit()
+            return True
+
+    async def get_due_reminders(self) -> List[Dict[str, Any]]:
+        """Возвращает список напоминаний, готовых к отправке (due_at <= now, status = 'pending')."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT r.id as reminder_id, r.appointment_id, r.type, r.due_at, r.attempt_count,
+                       a.telegram_id, a.client_name, a.phone, a.doctor, a.service, a.date_time, a.status as app_status
+                FROM reminders r
+                JOIN appointments a ON r.appointment_id = a.id
+                WHERE r.status = 'pending'
+                  AND a.status NOT IN ('cancelled', 'completed', 'no_show')
+                  AND datetime(r.due_at) <= datetime('now')
+                ORDER BY r.due_at ASC
+                LIMIT 50
+                """
+            )
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+    async def mark_reminder_sent(self, reminder_id: int) -> bool:
+        """Отмечает напоминание как успешно отправленное."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                UPDATE reminders
+                SET status = 'sent', sent_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (reminder_id,),
+            )
+            await db.commit()
+            return True
+
+    async def mark_reminder_failed(self, reminder_id: int, error_text: str) -> bool:
+        """Фиксирует ошибку отправки напоминания (например, бот заблокирован)."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                UPDATE reminders
+                SET status = 'failed', attempt_count = attempt_count + 1, last_error = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (error_text, reminder_id),
+            )
+            await db.commit()
+            return True
+
+    async def get_urgent_unconfirmed_appointments(self) -> List[Dict[str, Any]]:
+        """
+        Находит визиты, до которых осталось <= 2 часов, но пациент до сих пор в статусе 'pending'.
+        Используется для мгновенного алерта администратору.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT * FROM appointments
+                WHERE status = 'pending'
+                  AND datetime(date_time) <= datetime('now', '+2 hours')
+                  AND datetime(date_time) >= datetime('now')
+                """
             )
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]

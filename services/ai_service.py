@@ -8,6 +8,7 @@
 import json
 import asyncio
 import logging
+import re
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List
 from openai import AsyncOpenAI
@@ -117,20 +118,30 @@ class AIService:
             {"role": "system", "content": SYSTEM_PROMPT}
         ]
 
-        # Добавляем контекст о пользователе и его языке
-        lang_note = f"Предпочитаемый язык пользователя: {forced_language.upper()}." if forced_language else ""
-        if user_info:
-            tg_name = f"{user_info.get('first_name', '')} {user_info.get('last_name', '')}".strip()
-            username = user_info.get("username", "")
-            user_meta = f"Пациент: Имя: '{tg_name}', Username: '@{username}'. {lang_note}".strip()
-            messages.append({"role": "system", "content": user_meta})
-        elif lang_note:
-            messages.append({"role": "system", "content": lang_note})
+        # Phase 7: PII Stripping & Privacy Guardrail
+        # Never send user's real names, handles or phone numbers to external LLM provider.
+        if forced_language:
+            messages.append({
+                "role": "system",
+                "content": f"Язык пациента для ответа: {forced_language.upper()}."
+            })
 
         for msg in history:
-            messages.append({"role": msg["role"], "content": msg["content"]})
+            # Mask phone numbers in history
+            clean_history_content = re.sub(
+                r'(\+?998[\s\-]?)?\(?\d{2}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}',
+                '[ТЕЛЕФОН_СКРЫТ]',
+                msg["content"]
+            )
+            messages.append({"role": msg["role"], "content": clean_history_content})
 
-        messages.append({"role": "user", "content": user_message})
+        # Mask phone numbers in current user prompt
+        clean_user_message = re.sub(
+            r'(\+?998[\s\-]?)?\(?\d{2}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}',
+            '[ТЕЛЕФОН_СКРЫТ]',
+            user_message
+        )
+        messages.append({"role": "user", "content": clean_user_message})
 
         try:
             # 3. Запрос к LLM (DeepSeek или OpenAI) с инструментами и лимитом 250 токенов
