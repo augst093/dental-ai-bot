@@ -107,6 +107,37 @@ class Database:
                 );
                 """
             )
+            # Лист ожидания: пациент просит сообщить, когда освободится окно
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS waitlist (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    telegram_id INTEGER NOT NULL,
+                    wanted_date TEXT NOT NULL,
+                    doctor TEXT DEFAULT 'any',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                """
+            )
+
+            # Журнал автоматических рассылок (защита от повторной отправки)
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS outreach (
+                    item_key TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (item_key, kind)
+                );
+                """
+            )
+
+            # Источник пациента (deep-link вида t.me/bot?start=instagram)
+            cursor = await db.execute("PRAGMA table_info(users)")
+            user_columns = {row[1] for row in await cursor.fetchall()}
+            if "source" not in user_columns:
+                await db.execute("ALTER TABLE users ADD COLUMN source TEXT DEFAULT NULL;")
+
             await db.commit()
 
     async def get_or_create_user(
@@ -436,6 +467,129 @@ class Database:
             )
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
+
+    # ------------------------------------------------------------------
+    # Growth features: sources, digest, waitlist, outreach log
+    # ------------------------------------------------------------------
+
+    async def set_user_source(self, telegram_id: int, source: str) -> None:
+        """Запоминает источник первого прихода; существующий источник не перезаписывает."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE users SET source = ? WHERE telegram_id = ? AND source IS NULL",
+                (source, telegram_id),
+            )
+            await db.commit()
+
+    async def get_sources_breakdown(self) -> List[Dict[str, Any]]:
+        """Сколько пациентов пришло из каждого источника."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT COALESCE(source, 'direct') AS source, COUNT(*) AS total
+                FROM users
+                GROUP BY COALESCE(source, 'direct')
+                ORDER BY total DESC
+                """
+            )
+            return [dict(row) for row in await cursor.fetchall()]
+
+    async def get_digest_stats(self, days: int = 7) -> Dict[str, int]:
+        """Реальные цифры записей за период (вместо захардкоженных значений)."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                """
+                SELECT
+                    COUNT(*),
+                    SUM(CASE WHEN status IN ('confirmed', 'completed') THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN status = 'no_show' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END)
+                FROM appointments
+                WHERE created_at >= datetime('now', ?)
+                """,
+                (f"-{int(days)} days",),
+            )
+            total, confirmed, no_show, cancelled = [v or 0 for v in await cursor.fetchone()]
+            return {"total": total, "confirmed": confirmed, "no_show": no_show, "cancelled": cancelled}
+
+    async def count_appointments_on(self, date_prefix: str) -> int:
+        """Количество активных записей на дату (формат YYYY-MM-DD)."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "SELECT COUNT(*) FROM appointments WHERE date_time LIKE ? AND status != 'cancelled'",
+                (f"{date_prefix}%",),
+            )
+            return (await cursor.fetchone())[0]
+
+    async def mark_outreach(self, item_key: str, kind: str) -> bool:
+        """Возвращает True, если отметка поставлена впервые. Так каждое сообщение уходит один раз."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "INSERT OR IGNORE INTO outreach (item_key, kind) VALUES (?, ?)",
+                (item_key, kind),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def get_review_candidates(self) -> List[Dict[str, Any]]:
+        """Визиты, прошедшие 2+ часа назад (не отменённые и не неявки), ещё без просьбы об отзыве."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT id, telegram_id, service, date_time FROM appointments
+                WHERE status IN ('confirmed', 'completed')
+                  AND telegram_id IS NOT NULL AND telegram_id != 0
+                  AND datetime(date_time) <= datetime('now', '-2 hours')
+                  AND datetime(date_time) >= datetime('now', '-3 days')
+                """
+            )
+            return [dict(row) for row in await cursor.fetchall()]
+
+    async def get_recall_candidates(self) -> List[Dict[str, Any]]:
+        """Пациенты, у которых последний визит был 180+ дней назад."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT telegram_id, MAX(date_time) AS last_visit FROM appointments
+                WHERE status IN ('confirmed', 'completed')
+                  AND telegram_id IS NOT NULL AND telegram_id != 0
+                GROUP BY telegram_id
+                HAVING datetime(MAX(date_time)) <= datetime('now', '-180 days')
+                """
+            )
+            return [dict(row) for row in await cursor.fetchall()]
+
+    async def add_waitlist(self, telegram_id: int, wanted_date: str, doctor: str = "any") -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "INSERT INTO waitlist (telegram_id, wanted_date, doctor) VALUES (?, ?, ?)",
+                (telegram_id, wanted_date, doctor),
+            )
+            await db.commit()
+
+    async def pop_waitlist_for(self, date_prefix: str, doctor: str) -> List[Dict[str, Any]]:
+        """Забирает людей из листа ожидания на дату, подходящих под врача (или 'any')."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """
+                SELECT * FROM waitlist
+                WHERE wanted_date = ? AND (doctor = 'any' OR doctor = ?)
+                ORDER BY created_at
+                """,
+                (date_prefix, doctor),
+            )
+            rows = [dict(row) for row in await cursor.fetchall()]
+            if rows:
+                ids = [row["id"] for row in rows]
+                await db.execute(
+                    f"DELETE FROM waitlist WHERE id IN ({','.join('?' * len(ids))})", ids
+                )
+                await db.commit()
+            return rows
 
 
 db = Database()

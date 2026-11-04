@@ -6,6 +6,7 @@
 3. DeepSeek API (deepseek-chat) с непрерывным typing-индикатором для произвольных вопросов.
 """
 
+import re
 import sys
 import json
 import asyncio
@@ -15,7 +16,7 @@ from typing import Optional
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command, CommandStart
 from aiogram.enums import ParseMode
-from aiogram.types import WebAppInfo, MenuButtonWebApp
+from aiogram.types import WebAppInfo, MenuButtonWebApp, BufferedInputFile
 
 from config import config
 from database import db
@@ -43,6 +44,13 @@ from services.ai_service import ai_service
 from services.notifier import notifier, get_tashkent_time_str
 from services.sheets_service import sheets_service
 from services.reminder_service import reminder_engine
+from services.growth_service import (
+    growth_worker,
+    build_ics,
+    build_digest_text,
+    notify_waitlist,
+    visit_instructions,
+)
 
 # Настройка логирования
 logging.basicConfig(
@@ -97,6 +105,11 @@ async def handle_start(message: types.Message):
     )
     # Сбрасываем флаг ожидания оператора
     await db.set_operator_mode(user.id, False)
+
+    # Источник пациента из ссылки t.me/<bot>?start=instagram (сохраняется один раз)
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) == 2 and re.fullmatch(r"[A-Za-z0-9_-]{1,32}", parts[1].strip()):
+        await db.set_user_source(user.id, parts[1].strip().lower())
 
     # ВСЕГДА отправляем эстетичный экран выбора языка с инлайн-кнопками первым сообщением
     await message.answer(
@@ -676,6 +689,9 @@ async def handle_cancel_visit(callback: types.CallbackQuery):
     await db.update_appointment_status(app_id, "cancelled")
     app = await db.get_appointment(app_id)
     lang = await get_user_lang(callback.from_user.id)
+    if app:
+        # Освободившийся слот сразу предлагаем людям из листа ожидания
+        await notify_waitlist(callback.bot, app.get("date_time", ""), app.get("doctor", ""))
 
     texts = {
         "ru": (
@@ -733,28 +749,22 @@ async def handle_cancel_visit(callback: types.CallbackQuery):
 @dp.message(Command("digest"))
 async def handle_digest_command(message: types.Message):
     """Команда /digest для мгновенной генерации отчёта владельцу клиники (демо-сценарий)."""
-    stats = await db.get_stats()
+    # Цифры считаются из базы: раньше здесь были захардкоженные проценты
     time_str = get_tashkent_time_str()
-
-    total_leads = stats.get("total_leads", 0)
-    today_leads = stats.get("leads_today", 0)
-
-    # Расчёт сохраненного времени администратора (4 мин на запись)
-    admin_time_saved_min = total_leads * 4
-    admin_hours = round(admin_time_saved_min / 60, 1)
-
-    digest_text = (
-        f"📊 <b>НЕДЕЛЬНЫЙ ДАЙДЖЕСТ КЛИНИКИ DENTALUX</b>\n"
-        f"<i>Сформировано: {time_str} (Asia/Tashkent)</i>\n\n"
-        f"📥 <b>Всего записей через бот:</b> {total_leads}\n"
-        f"📅 <b>Новых записей сегодня:</b> {today_leads}\n"
-        f"📈 <b>Подтверждаемость визитов:</b> 88%\n"
-        f"🚫 <b>Неявки (no-show):</b> 6% (снижение в 2.4 раза)\n"
-        f"♻️ <b>Спасённых слотов после отмен:</b> 11\n"
-        f"⏱ <b>Сэкономлено времени администратора:</b> ~{admin_hours} ч.\n\n"
-        f"💡 <i>Автоматические напоминания за 24ч и 2ч предотвратили 14 пустых окон в расписании.</i>"
-    )
+    digest_text = await build_digest_text(7, "📊 <b>НЕДЕЛЬНЫЙ ДАЙДЖЕСТ КЛИНИКИ DENTALUX</b>")
+    digest_text += f"\n\n<i>Сформировано: {time_str} (Asia/Tashkent)</i>"
     await message.answer(digest_text, parse_mode=ParseMode.HTML)
+
+
+@dp.message(Command("waitlist"))
+async def handle_waitlist_command(message: types.Message):
+    """/waitlist YYYY-MM-DD: сообщить, когда освободится окно на дату."""
+    parts = (message.text or "").split()
+    if len(parts) < 2 or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", parts[1]):
+        await message.answer("Укажите дату в формате: /waitlist 2026-11-06")
+        return
+    await db.add_waitlist(message.from_user.id, parts[1])
+    await message.answer(f"🔔 Готово. Сообщим, если освободится окно на {parts[1]}.")
 
 
 @dp.message(Command("delete_my_data"))
@@ -1138,6 +1148,15 @@ async def handle_web_app_data(message: types.Message):
             parse_mode=ParseMode.HTML,
             reply_markup=get_main_menu_keyboard(lang),
         )
+
+        # Адрес и памятка, затем файл для календаря
+        await message.answer(visit_instructions(lang), parse_mode=ParseMode.HTML)
+        ics_payload = build_ics(service, doctor, preferred_time)
+        if ics_payload:
+            await message.answer_document(
+                BufferedInputFile(ics_payload, filename="DentaLux_visit.ics"),
+                caption="📅 Добавьте визит в календарь",
+            )
     except Exception as e:
         logger.error(f"Ошибка при обработке WebApp данных: {e}", exc_info=True)
         await message.answer(
@@ -1170,6 +1189,14 @@ async def main():
 
     # Запуск фонового воркера напоминаний (Persistent Reminder Engine)
     reminder_engine.start_worker(bot)
+    growth_worker.start(bot)
+
+    # Уведомление администраторов о запуске (сигнал, что бот поднялся после деплоя или сбоя)
+    if config.ADMIN_CHAT_ID:
+        try:
+            await bot.send_message(config.ADMIN_CHAT_ID, "✅ Бот DentaLux запущен и принимает обращения.")
+        except Exception as e:
+            logger.warning(f"Не удалось отправить уведомление о запуске: {e}")
 
     # Настройка кнопки Web App в меню чата (слева от поля ввода)
     try:
