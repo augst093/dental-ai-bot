@@ -31,7 +31,7 @@ def get_language_inline_keyboard() -> InlineKeyboardMarkup:
 MENU_BUTTON_TEXTS = {
     "ru": {
         "miniapp": "✨ Каталог Mini App",
-        "booking": "📅 Записаться на приём",
+        "booking": "📅 Записаться на консультацию",
         "services": "🦷 Услуги и цены",
         "contacts": "📍 Адрес и контакты",
         "about": "⭐️ О клинике и врачах",
@@ -192,7 +192,7 @@ def get_contacts_inline_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
     labels = {
         "ru": {
             "maps": "🗺 Открыть на Яндекс.Картах",
-            "book": "📅 Записаться на приём",
+            "book": "📅 Записаться на консультацию",
         },
         "uz": {
             "maps": "🗺 Yandex Kartada ochish",
