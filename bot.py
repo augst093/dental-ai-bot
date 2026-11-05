@@ -44,6 +44,7 @@ from services.ai_service import ai_service
 from services.notifier import notifier, get_tashkent_time_str
 from services.sheets_service import sheets_service
 from services.reminder_service import reminder_engine
+from services.outbox_worker import outbox_worker
 from services.growth_service import (
     growth_worker,
     build_ics,
@@ -1152,6 +1153,7 @@ async def main():
     # Запуск фонового воркера напоминаний (Persistent Reminder Engine)
     reminder_engine.start_worker(bot)
     growth_worker.start(bot)
+    outbox_worker.start(bot)
 
     # Уведомление администраторов о запуске (сигнал, что бот поднялся после деплоя или сбоя)
     if config.ADMIN_CHAT_ID:
