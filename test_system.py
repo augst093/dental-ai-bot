@@ -46,46 +46,44 @@ async def run_tests():
         assert len(cat_kb.inline_keyboard) >= 5
     print("Шаблоны и клавиатуры на 3 языках: OK")
 
-    print("\n--- 2. Проверка работы с языком пользователя в SQLite ---")
-    test_db_path = os.path.join(os.path.dirname(__file__), "data", "test_dental.db")
-    if os.path.exists(test_db_path):
-        os.remove(test_db_path)
+    print("\n--- 2. Проверка работы с языком пользователя в PostgreSQL ---")
+    # ВНИМАНИЕ: тест пишет в базу из DATABASE_URL. Используйте тестовую базу, не продакшен.
+    if not os.environ.get("DATABASE_URL"):
+        raise SystemExit("Задайте DATABASE_URL тестовой базы Postgres и запустите снова.")
+    test_telegram_id = 55555
 
-    db = Database(test_db_path)
+    db = Database()
     await db.init_db()
+    try:
+        user = await db.get_or_create_user(test_telegram_id, "newbie", "Тест", "Тестов")
+        assert user["language"] is None
+        assert await db.get_user_language(test_telegram_id) is None
+        print("Языковой онбординг (новый пользователь без языка): OK")
 
-    # Новый пользователь без языка (онбординг)
-    user = await db.get_or_create_user(55555, "newbie", "Тест", "Тестов")
-    assert user["language"] is None
-    assert await db.get_user_language(55555) is None
-    print("Языковой онбординг (новый пользователь без языка): OK")
+        await db.update_user_language(test_telegram_id, "uz")
+        assert await db.get_user_language(test_telegram_id) == "uz"
+        await db.update_user_language(test_telegram_id, "en")
+        assert await db.get_user_language(test_telegram_id) == "en"
+        print("Сохранение и смена языка: OK")
 
-    # Выбор языка UZ
-    await db.update_user_language(55555, "uz")
-    assert await db.get_user_language(55555) == "uz"
-    print("Сохранение выбранного языка: OK")
+        lead_id = await db.save_lead(
+            telegram_id=test_telegram_id,
+            client_name="Test User",
+            phone="+998901112233",
+            service="Consultation",
+            preferred_time="Tomorrow 10:00",
+            summary="Testing appointment",
+            language="en",
+        )
+        assert lead_id > 0
+        print(f"Сохранение лида #{lead_id}: OK")
+    finally:
+        async with db._p().acquire() as conn:
+            await conn.execute("DELETE FROM bot_leads WHERE telegram_id = $1", test_telegram_id)
+            await conn.execute("DELETE FROM bot_messages WHERE telegram_id = $1", test_telegram_id)
+            await conn.execute("DELETE FROM bot_users WHERE telegram_id = $1", test_telegram_id)
+        await db.close()
 
-    # Смена языка на EN
-    await db.update_user_language(55555, "en")
-    assert await db.get_user_language(55555) == "en"
-    print("Смена языка на EN: OK")
-
-    # Проверка сохранения лида
-    lead_id = await db.save_lead(
-        telegram_id=55555,
-        client_name="Test User",
-        phone="+998901112233",
-        service="Consultation",
-        preferred_time="Tomorrow 10:00",
-        summary="Testing appointment",
-        language="en",
-    )
-    assert lead_id == 1
-    print(f"Сохранение лида #{lead_id}: OK")
-
-    # Очистка тестовой базы
-    if os.path.exists(test_db_path):
-        os.remove(test_db_path)
     print("\n[SUCCESS] Все тесты гибридной архитектуры (v2) пройдены успешно!")
 
 

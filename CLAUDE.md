@@ -58,7 +58,7 @@ c:\Users\augus\OneDrive\Desktop\1\
 ### Стек `dental_ai_bot`:
 - **Python 3.11+**, **aiogram 3.x** (асинхронный фреймворк для Telegram Bot API).
 - **DeepSeek API (`deepseek-chat`)** как основное ядро диалога и Function Calling (`register_lead`).
-- **aiosqlite** (асинхронная локальная база данных для пользователей, лидов, записей и очереди напоминаний).
+- **PostgreSQL** через **asyncpg**: та же база, что у Mini App. Записи, пациенты и напоминания лежат в таблицах Prisma (`Appointment`, `Patient`, `Reminder`, `AuditLog`); служебные таблицы бота имеют префикс `bot_`.
 - **gspread** (опциональная выгрузка лидов в Google Таблицы клиники).
 - **Фоновый асинхронный воркер напоминаний** (`services/reminder_service.py`), опрашивающий очередь каждые 60 секунд.
 
@@ -217,7 +217,7 @@ c:\Users\augus\OneDrive\Desktop\1\
 | :--- | :--- |
 | `bot.py` | Точка входа Telegram-бота (aiogram 3.x), обработчики сообщений, WebApp данных, запуск воркера напоминаний. |
 | `config.py` | Модуль конфигурации, чтение и валидация `.env`, приоритет DeepSeek API. |
-| `database.py` | Асинхронная база SQLite (таблицы `users`, `messages`, `leads`, `appointments`, `reminders`). |
+| `database.py` | Слой работы с PostgreSQL (asyncpg): общие таблицы Prisma и служебные `bot_*`. |
 | `services/ai_service.py` | Интеграция с DeepSeek API (`deepseek-chat`), PII маскирование телефонов, Function Calling. |
 | `services/reminder_service.py` | Фоновый воркер напоминаний (опрос каждые 60с, 24ч и 2ч уведомления, инлайн-кнопки). |
 | `services/notifier.py` | Отправка форматированных карточек лидов и алертов в закрытую группу администраторов. |
@@ -319,7 +319,7 @@ vercel --prod --yes
 # 1. Проверка синтаксиса Python файлов:
 python -m py_compile bot.py config.py database.py services/reminder_service.py services/ai_service.py
 
-# 2. Тест базы данных и AI подключения:
+# 2. Тест базы данных (нужна ТЕСТОВАЯ база Postgres в DATABASE_URL, не продакшен):
 python test_system.py
 
 # 3. Локальный запуск бота:
@@ -347,7 +347,7 @@ DEEPSEEK_API_KEY=sk-ваш_ключ_deepseek
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 DEEPSEEK_MODEL=deepseek-chat
 TIMEZONE=Asia/Tashkent
-DATABASE_PATH=data/dental_bot.db
+DATABASE_URL=postgresql://...   # публичный адрес базы из Railway, только в переменных окружения, не в git
 MINIAPP_URL=https://dentalminiapp.vercel.app
 ```
 
@@ -370,3 +370,14 @@ MINIAPP_URL=https://dentalminiapp.vercel.app
 
 ---
 *Документ актуален, проверен и отражает 100% текущего состояния кодовой базы.*
+
+---
+
+## 9. Обновления (ноябрь 2026)
+
+- **Mini App и бот работают с одной базой PostgreSQL.** Напоминания считаются от реального времени визита. Запись из Mini App создаётся один раз (через API), бот её не дублирует.
+- **Админ-панель в Telegram:** API проверяет подпись `initData` и `ADMIN_ID`. Без `BOT_TOKEN` на сервере админские маршруты отвечают 503, без подписи 401.
+- **Запись в Mini App** требует согласия на обработку данных. Telegram ID берётся только из подписанного `initData`.
+- **Лимиты:** запись (6 попыток за 10 минут с IP, 4 записи в час на Telegram-пользователя) и чат (20 запросов за 10 минут с IP). Счётчики хранятся в памяти каждого экземпляра, поэтому лимит приблизительный.
+- **Группа админов:** о новой записи из Mini App сообщает API (переменные `BOT_TOKEN` и `ADMIN_CHAT_ID` на Vercel). Бот карточку для таких записей больше не шлёт.
+- **Резервные копии:** ежедневный файл SQLite убран. Копии базы обеспечивает Railway Postgres.

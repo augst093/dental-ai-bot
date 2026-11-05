@@ -813,7 +813,7 @@ async def handle_contact_sharing(message: types.Message):
 
     client_name = f"{contact.first_name or ''} {contact.last_name or ''}".strip() or (user.first_name or "Пациент")
 
-    # Сохраняем заявку в SQLite
+    # Сохраняем заявку в PostgreSQL
     lead_id = await db.save_lead(
         telegram_id=user.id,
         client_name=client_name,
@@ -1060,18 +1060,7 @@ async def handle_web_app_data(message: types.Message):
         # Запись в клинику создаёт Mini App (API пишет её в общую базу вместе с напоминаниями).
         # Здесь создавать запись нельзя: иначе появится дубль, а напоминания будут без реального времени визита.
         
-        # 2. Отправляем карточку в группу администраторов
-        await notifier.notify_new_lead(
-            lead_id=lead_id,
-            telegram_id=user.id if user else 0,
-            client_name=name,
-            phone=phone,
-            service=service,
-            preferred_time=preferred_time,
-            summary=summary,
-            language=lang,
-            username=user.username if user else None,
-        )
+        # Карточку для группы администраторов отправляет сам API Mini App (чтобы не было дублей).
         
         # 3. Синхронизируем с Google Sheets
         await sheets_service.append_lead(
