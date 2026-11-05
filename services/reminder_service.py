@@ -7,6 +7,7 @@ Handles blocked bots, edits original messages without spam, and alerts administr
 
 import asyncio
 import logging
+from services.outbox_worker import enqueue, enqueue_staff_alert
 from datetime import datetime
 from typing import Optional, Dict, Any
 
@@ -155,39 +156,18 @@ class ReminderEngine:
             text = messages.get(lang, messages["ru"])
             reply_markup = get_reminder_keyboard(appointment_id, lang)
 
-            try:
-                await bot.send_message(
-                    chat_id=telegram_id,
-                    text=text,
-                    parse_mode="HTML",
-                    reply_markup=reply_markup,
-                )
-                await db.mark_reminder_sent(reminder_id)
-                logger.info(f"Напоминание {reminder_id} успешно отправлено {client_name} ({telegram_id})")
-
-            except (TelegramForbiddenError, TelegramBadRequest) as ex:
-                err_str = f"Бот заблокирован пользователем: {ex}"
-                logger.warning(f"Ошибка отправки пациенту {telegram_id}: {err_str}")
-                await db.mark_reminder_failed(reminder_id, err_str)
-
-                # Уведомляем администратора, что пациент недоступен в боте
-                if config.ADMIN_CHAT_ID:
-                    alert_admin = (
-                        f"⚠️ <b>ВНИМАНИЕ АДМИНИСТРАТОРУ! Пациент заблокировал бота:</b>\n\n"
-                        f"👤 <b>Пациент:</b> {client_name}\n"
-                        f"📞 <b>Телефон:</b> <code>{phone}</code>\n"
-                        f"🦷 <b>Услуга:</b> {service}\n"
-                        f"📅 <b>Время приёма:</b> {date_time}\n\n"
-                        "Пациент не получил напоминание в Telegram. Рекомендуется позвонить по телефону."
-                    )
-                    try:
-                        await bot.send_message(
-                            chat_id=config.ADMIN_CHAT_ID,
-                            text=alert_admin,
-                            parse_mode="HTML",
-                        )
-                    except Exception as adm_e:
-                        logger.error(f"Не удалось отправить алерт администратору: {adm_e}")
+            # Queued in the outbox: the worker sends it with retries and marks the reminder sent or failed.
+            # Queued at most once per reminder, so the minute-by-minute polling never duplicates it.
+            queued = await enqueue(
+                telegram_id,
+                "reminder",
+                text,
+                reply_markup=reply_markup,
+                ref_type="reminder",
+                ref_id=str(reminder_id),
+            )
+            if queued:
+                logger.info(f"Напоминание {reminder_id} поставлено в очередь для {client_name} ({telegram_id})")
 
     async def check_unconfirmed_urgent(self, bot: Bot):
         """
@@ -218,15 +198,7 @@ class ReminderEngine:
                 f"⚠️ Пациент не нажал «Приду». Чтобы избежать пустого слота, свяжитесь с ним прямо сейчас!"
             )
 
-            try:
-                await bot.send_message(
-                    chat_id=config.ADMIN_CHAT_ID,
-                    text=alert_text,
-                    parse_mode="HTML",
-                )
-                logger.info(f"Алерт о неподтвержденной записи {app_id} отправлен администратору")
-            except Exception as e:
-                logger.error(f"Не удалось отправить urgent alert: {e}")
+            await enqueue_staff_alert(alert_text)
 
 
 reminder_engine = ReminderEngine()
