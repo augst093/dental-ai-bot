@@ -44,6 +44,7 @@ from services.ai_service import ai_service
 from services.notifier import notifier, get_tashkent_time_str
 from services.sheets_service import sheets_service
 from services.reminder_service import reminder_engine
+from services.outbox_worker import outbox_worker, queued_bot
 from services.growth_service import (
     growth_worker,
     build_ics,
@@ -543,7 +544,7 @@ async def handle_admin_resume_ai(callback: types.CallbackQuery):
 
     user_lang = await get_user_lang(target_user_id)
     try:
-        await callback.bot.send_message(
+        await queued_bot.send_message(
             chat_id=target_user_id,
             text=(
                 "🤖 Диалог с администратором завершен. "
@@ -567,6 +568,16 @@ async def handle_admin_resume_ai(callback: types.CallbackQuery):
 async def handle_confirm_visit(callback: types.CallbackQuery):
     """Пациент нажал '🟢 Приду' в сообщении-напоминании."""
     app_id = callback.data.split(":")[1]
+    current = await db.get_appointment(app_id)
+    if current is None:
+        await callback.answer("Запись не найдена", show_alert=True)
+        return
+    if current["status"] == "confirmed":
+        await callback.answer("Уже подтверждено")
+        return
+    if current["status"] in ("cancelled", "completed", "no_show"):
+        await callback.answer("Запись уже неактуальна", show_alert=True)
+        return
     await db.update_appointment_status(app_id, "confirmed")
     app = await db.get_appointment(app_id)
     lang = await get_user_lang(callback.from_user.id)
@@ -615,7 +626,7 @@ async def handle_confirm_visit(callback: types.CallbackQuery):
             f"Статус обновлён на: <b>Confirmed</b>"
         )
         try:
-            await callback.bot.send_message(
+            await queued_bot.send_message(
                 chat_id=config.ADMIN_CHAT_ID,
                 text=admin_alert,
                 parse_mode=ParseMode.HTML,
@@ -673,7 +684,7 @@ async def handle_reschedule_visit(callback: types.CallbackQuery):
             f"Пожалуйста, свяжитесь с пациентом для согласования новой даты."
         )
         try:
-            await callback.bot.send_message(
+            await queued_bot.send_message(
                 chat_id=config.ADMIN_CHAT_ID,
                 text=admin_alert,
                 parse_mode=ParseMode.HTML,
@@ -733,7 +744,7 @@ async def handle_cancel_visit(callback: types.CallbackQuery):
             f"<b>Слот освобождён и доступен для других пациентов.</b>"
         )
         try:
-            await callback.bot.send_message(
+            await queued_bot.send_message(
                 chat_id=config.ADMIN_CHAT_ID,
                 text=admin_alert,
                 parse_mode=ParseMode.HTML,
@@ -917,7 +928,7 @@ async def handle_user_arbitrary_text(message: types.Message):
                 f"👤 {user_label} {username_part} [ID: <code>{user.id}</code>]\n\n"
                 f"<blockquote>«{text}»</blockquote>"
             )
-            await notifier.bot.send_message(
+            await queued_bot.send_message(
                 chat_id=config.ADMIN_CHAT_ID,
                 text=forward_msg,
                 parse_mode=ParseMode.HTML,
@@ -1152,11 +1163,12 @@ async def main():
     # Запуск фонового воркера напоминаний (Persistent Reminder Engine)
     reminder_engine.start_worker(bot)
     growth_worker.start(bot)
+    outbox_worker.start(bot)
 
     # Уведомление администраторов о запуске (сигнал, что бот поднялся после деплоя или сбоя)
     if config.ADMIN_CHAT_ID:
         try:
-            await bot.send_message(config.ADMIN_CHAT_ID, "✅ Бот DentaLux запущен и принимает обращения.")
+            await queued_bot.send_message(config.ADMIN_CHAT_ID, "✅ Бот DentaLux запущен и принимает обращения.")
         except Exception as e:
             logger.warning(f"Не удалось отправить уведомление о запуске: {e}")
 
