@@ -568,6 +568,16 @@ async def handle_admin_resume_ai(callback: types.CallbackQuery):
 async def handle_confirm_visit(callback: types.CallbackQuery):
     """Пациент нажал '🟢 Приду' в сообщении-напоминании."""
     app_id = callback.data.split(":")[1]
+    current = await db.get_appointment(app_id)
+    if current is None:
+        await callback.answer("Запись не найдена", show_alert=True)
+        return
+    if current["status"] == "confirmed":
+        await callback.answer("Уже подтверждено")
+        return
+    if current["status"] in ("cancelled", "completed", "no_show"):
+        await callback.answer("Запись уже неактуальна", show_alert=True)
+        return
     await db.update_appointment_status(app_id, "confirmed")
     app = await db.get_appointment(app_id)
     lang = await get_user_lang(callback.from_user.id)
