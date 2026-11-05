@@ -24,6 +24,7 @@ from aiogram.exceptions import (
     TelegramAPIError,
     TelegramBadRequest,
     TelegramForbiddenError,
+    TelegramMigrateToChat,
     TelegramNetworkError,
     TelegramRetryAfter,
 )
@@ -229,6 +230,15 @@ class OutboxWorker:
             )
         except TelegramRetryAfter as error:
             await self._failed_attempt(conn, row, "retry_after", str(error), retry_after=int(error.retry_after))
+            return
+        except TelegramMigrateToChat as error:
+            # The group became a supergroup and has a new id: move the row and send again right away
+            logger.warning("Чат %s стал супергруппой, новый id %s", chat_id, error.migrate_to_chat_id)
+            await conn.execute(
+                """UPDATE "Outbox" SET "chatId" = $2, "updatedAt" = (now() AT TIME ZONE 'UTC') WHERE id = $1""",
+                row["id"],
+                int(error.migrate_to_chat_id),
+            )
             return
         except TelegramForbiddenError as error:
             await self._failed_attempt(conn, row, "blocked", str(error))
