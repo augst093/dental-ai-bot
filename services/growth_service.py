@@ -26,6 +26,7 @@ from aiogram.types import (
 )
 
 from config import config
+from services.outbox_worker import queued_bot
 from keyboards import MINIAPP_URL
 from database import db
 
@@ -206,7 +207,7 @@ async def send_review_requests(bot: Bot) -> None:
                 inline_keyboard=[[InlineKeyboardButton(text="⭐ Оставить отзыв", url=REVIEW_URL)]]
             )
         try:
-            await bot.send_message(
+            await queued_bot.send_message(
                 row["telegram_id"], REVIEW_TEXT.get(lang, REVIEW_TEXT["ru"]), reply_markup=markup
             )
         except TelegramForbiddenError:
@@ -227,7 +228,7 @@ async def send_recalls(bot: Bot) -> None:
                 inline_keyboard=[[InlineKeyboardButton(text="📅 Записаться", url=MINIAPP_URL)]]
             )
         try:
-            await bot.send_message(
+            await queued_bot.send_message(
                 row["telegram_id"], RECALL_TEXT.get(lang, RECALL_TEXT["ru"]), reply_markup=markup
             )
         except TelegramForbiddenError:
@@ -249,7 +250,7 @@ async def notify_waitlist(bot: Bot, date_time: str, doctor: str) -> None:
             "en": f"🔔 A slot opened on {day}. Book quickly via the Mini App.",
         }.get(lang, "")
         try:
-            await bot.send_message(entry["telegram_id"], text)
+            await queued_bot.send_message(entry["telegram_id"], text)
         except Exception:
             logger.exception("Не удалось уведомить лист ожидания")
 
@@ -290,7 +291,7 @@ class GrowthWorker:
                 today = await db.count_appointments_on(f"{now:%Y-%m-%d}")
                 text = f"{text}\n\n📅 <b>Сегодня записей:</b> {today}"
                 if config.ADMIN_CHAT_ID:
-                    await bot.send_message(config.ADMIN_CHAT_ID, text, parse_mode=ParseMode.HTML)
+                    await queued_bot.send_message(config.ADMIN_CHAT_ID, text, parse_mode=ParseMode.HTML)
 
         await send_review_requests(bot)
         await send_recalls(bot)

@@ -16,7 +16,7 @@ import asyncio
 import json
 import logging
 import time
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 from aiogram import Bot
 from aiogram.enums import ParseMode
@@ -27,7 +27,7 @@ from aiogram.exceptions import (
     TelegramNetworkError,
     TelegramRetryAfter,
 )
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 
 from config import config
 from database import db
@@ -40,6 +40,7 @@ MIN_GAP_PRIVATE = 1.0
 MIN_GAP_GROUP = 3.0
 MIN_GAP_GLOBAL = 0.05  # about 20 messages per second overall
 
+HTML_KINDS = ("staff_alert", "reminder", "patient_html")
 ACTIVE_APPOINTMENT = ("pending", "confirmed", "reschedule_requested")
 
 
@@ -47,21 +48,28 @@ ACTIVE_APPOINTMENT = ("pending", "confirmed", "reschedule_requested")
 # Queueing
 # ---------------------------------------------------------------------------
 
-def keyboard_to_json(markup: Optional[InlineKeyboardMarkup]) -> Optional[str]:
+def keyboard_to_json(markup) -> Optional[str]:
     if markup is None:
         return None
-    return json.dumps(
-        [[{"text": b.text, "callback_data": b.callback_data} for b in row] for row in markup.inline_keyboard],
-        ensure_ascii=False,
-    )
+    if isinstance(markup, InlineKeyboardMarkup):
+        payload = {"type": "inline", "rows": [[{"text": b.text, "callback_data": b.callback_data} for b in row] for row in markup.inline_keyboard]}
+    elif isinstance(markup, ReplyKeyboardMarkup):
+        payload = {"type": "reply", "rows": [[b.text for b in row] for row in markup.keyboard]}
+    else:
+        return None
+    return json.dumps(payload, ensure_ascii=False)
 
 
-def keyboard_from_json(data) -> Optional[InlineKeyboardMarkup]:
+def keyboard_from_json(data):
     if not data:
         return None
-    rows = json.loads(data) if isinstance(data, str) else data
+    payload = json.loads(data) if isinstance(data, str) else data
+    if isinstance(payload, list):  # rows saved without a type (inline)
+        payload = {"type": "inline", "rows": payload}
+    if payload.get("type") == "reply":
+        return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=t) for t in row] for row in payload["rows"]], resize_keyboard=True)
     return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text=b["text"], callback_data=b["callback_data"]) for b in row] for row in rows]
+        inline_keyboard=[[InlineKeyboardButton(text=b["text"], callback_data=b["callback_data"]) for b in row] for row in payload["rows"]]
     )
 
 
@@ -99,6 +107,23 @@ async def enqueue(
             chat_id, kind, text, keyboard_to_json(reply_markup),
         )
         return True
+
+
+class QueuedSender:
+    """Same call as bot.send_message, but the message is queued and delivered by the outbox worker."""
+
+    async def send_message(self, chat_id, text, parse_mode=None, reply_markup=None, **kwargs):
+        chat = int(chat_id)
+        is_html = str(parse_mode) == "HTML"
+        if config.ADMIN_CHAT_ID and chat == int(config.ADMIN_CHAT_ID):
+            kind = "staff_alert"
+        else:
+            kind = "patient_html" if is_html else "patient_text"
+        await enqueue(chat, kind, text, reply_markup=reply_markup)
+        return None
+
+
+queued_bot = QueuedSender()
 
 
 async def enqueue_staff_alert(text: str) -> None:
@@ -193,8 +218,7 @@ class OutboxWorker:
                 return
 
         await self._respect_limits(chat_id)
-        # Staff alerts are written with HTML markup; patient messages are plain or HTML as stored
-        parse_mode = ParseMode.HTML if row["kind"] in ("staff_alert", "reminder") else None
+        parse_mode = ParseMode.HTML if row["kind"] in HTML_KINDS else None
         try:
             await bot.send_message(
                 chat_id,

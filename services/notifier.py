@@ -12,6 +12,7 @@ from aiogram import Bot
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from config import config
+from services.outbox_worker import queued_bot
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +93,7 @@ class NotifierService:
         )
 
         try:
-            await self.bot.send_message(
+            await queued_bot.send_message(
                 chat_id=config.ADMIN_CHAT_ID,
                 text=card_text,
                 parse_mode="HTML",
@@ -154,7 +155,7 @@ class NotifierService:
         )
 
         try:
-            await self.bot.send_message(
+            await queued_bot.send_message(
                 chat_id=config.ADMIN_CHAT_ID,
                 text=alert_text,
                 parse_mode="HTML",

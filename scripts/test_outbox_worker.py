@@ -124,6 +124,17 @@ async def main():
         cancelled_sent = CHAT_CANCELLED in bot.calls
         check("cancelled visit: reminder is not sent", cancelled_outbox and cancelled_outbox["s"] == "failed" and not cancelled_sent, f"({cancelled_outbox['lastError'] if cancelled_outbox else None})")
 
+        # 7. Proactive sends queue with the right kind and keep both keyboard types
+        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
+        await ow.queued_bot.send_message(CHAT_OK, "<b>Дайджест</b>", parse_mode="HTML",
+                                         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="ОК", callback_data="x:1")]]))
+        await ow.queued_bot.send_message(CHAT_OK, "Plain & text", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="Меню")]], resize_keyboard=True))
+        kinds = await conn.fetch('SELECT kind, "replyMarkup" FROM "Outbox" WHERE "chatId" = $1 AND "refId" IS NULL ORDER BY "createdAt" DESC LIMIT 2', CHAT_OK)
+        html_row = next((r for r in kinds if r["kind"] == "patient_html"), None)
+        plain_row = next((r for r in kinds if r["kind"] == "patient_text"), None)
+        check("HTML message is queued as patient_html with its inline keyboard", html_row is not None and ow.keyboard_from_json(html_row["replyMarkup"]).inline_keyboard[0][0].callback_data == "x:1")
+        check("plain message is queued as patient_text with its reply keyboard", plain_row is not None and isinstance(ow.keyboard_from_json(plain_row["replyMarkup"]), ReplyKeyboardMarkup))
+
         # Clean up the test data
         await conn.execute('DELETE FROM "Outbox" WHERE "chatId" BETWEEN 778001 AND 778004 OR ("kind" = \'staff_alert\' AND "text" LIKE \'%Тест Очередь%\')')
         await conn.execute('DELETE FROM "Appointment" WHERE "patientId" IN (SELECT id FROM "Patient" WHERE "telegramId" BETWEEN 778001 AND 778004)')
