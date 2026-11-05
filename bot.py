@@ -774,17 +774,7 @@ async def handle_delete_my_data(message: types.Message):
     if not user:
         return
 
-    import aiosqlite
-    async with aiosqlite.connect(db.db_path) as conn:
-        await conn.execute(
-            "UPDATE leads SET client_name = 'Анонимизированный пациент', phone = '+998000000000' WHERE telegram_id = ?",
-            (user.id,),
-        )
-        await conn.execute(
-            "UPDATE appointments SET client_name = 'Анонимизированный пациент', phone = '+998000000000' WHERE telegram_id = ?",
-            (user.id,),
-        )
-        await conn.commit()
+    await db.anonymize_user_data(user.id)
 
     lang = await get_user_lang(user.id)
     confirm_text = {
@@ -1056,7 +1046,7 @@ async def handle_web_app_data(message: types.Message):
         preferred_time = f"{date} {time}".strip()
         summary = f"Запись через Mini App. Врач: {doctor}"
         
-        # 1. Сохраняем в локальную базу SQLite
+        # 1. Сохраняем лид в общую базу
         lead_id = await db.save_lead(
             telegram_id=user.id if user else 0,
             client_name=name,
@@ -1067,25 +1057,8 @@ async def handle_web_app_data(message: types.Message):
             language=lang,
         )
 
-        # 1.5. Сохраняем в таблицу appointments и регистрируем в Lifecycle State Machine
-        appointment_id = f"app_{user.id if user else 0}_{int(asyncio.get_event_loop().time() * 1000)}"
-        await db.save_appointment(
-            appointment_id=appointment_id,
-            telegram_id=user.id if user else 0,
-            client_name=name,
-            phone=phone,
-            doctor=doctor,
-            service=service,
-            date_time=preferred_time,
-            status="pending",
-            source="miniapp",
-        )
-
-        # Планируем напоминания за 24ч и 2ч (демо-расписание)
-        from datetime import datetime, timedelta
-        now_dt = datetime.utcnow()
-        await db.schedule_reminder(appointment_id, "reminder_24h", (now_dt + timedelta(hours=24)).isoformat())
-        await db.schedule_reminder(appointment_id, "reminder_2h", (now_dt + timedelta(hours=2)).isoformat())
+        # Запись в клинику создаёт Mini App (API пишет её в общую базу вместе с напоминаниями).
+        # Здесь создавать запись нельзя: иначе появится дубль, а напоминания будут без реального времени визита.
         
         # 2. Отправляем карточку в группу администраторов
         await notifier.notify_new_lead(
@@ -1182,7 +1155,7 @@ async def main():
 
     # Инициализация базы данных
     await db.init_db()
-    logger.info(f"База данных SQLite инициализирована: {config.DATABASE_PATH}")
+    logger.info("База данных PostgreSQL подключена (общая с Mini App)")
 
     bot = Bot(token=config.BOT_TOKEN)
     notifier.set_bot(bot)

@@ -1,144 +1,173 @@
 """
-Асинхронная работа с базой данных SQLite через aiosqlite.
-Хранение сессий пользователей, выбранного языка (RU/UZ/EN), истории диалогов и статусов лидов.
+Работа с базой данных PostgreSQL (та же база, что у Mini App).
+
+Общие таблицы (создаёт Prisma в dental_miniapp, бот только читает и пишет в них):
+  "Patient", "Appointment", "Reminder", "AuditLog"
+Таблицы только бота (создаёт бот при запуске):
+  bot_users, bot_messages, bot_leads, bot_waitlist, bot_outreach
+
+Все даты в базе хранятся в UTC без часового пояса (как у Prisma).
+Для показа пациенту и администратору время переводится в Asia/Tashkent (UTC+5).
 """
 
-import os
-from datetime import datetime
-from typing import Optional, List, Dict, Any
-import aiosqlite
+import logging
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
+
+import asyncpg
+
 from config import config
+
+logger = logging.getLogger(__name__)
+
+TASHKENT = ZoneInfo("Asia/Tashkent")
+UTC = timezone.utc
+
+# Какие записи считаются активными (занимают слот и ждут визита)
+ACTIVE_STATUSES = ("pending", "confirmed", "reschedule_requested")
+
+
+def _parse_visit_time(text: Optional[str]) -> Optional[datetime]:
+    """Разбирает время визита. Без пояса считаем, что это время Ташкента. Возвращает aware datetime."""
+    if not text:
+        return None
+    raw = text.strip()
+    parsed: Optional[datetime] = None
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d"):
+            try:
+                parsed = datetime.strptime(raw, fmt)
+                break
+            except ValueError:
+                continue
+    if parsed is None:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=TASHKENT)
+    return parsed
+
+
+def _to_db_utc(value: Optional[datetime]) -> Optional[datetime]:
+    """Переводит datetime в наивное UTC-время, как хранит Prisma."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=TASHKENT)
+    return value.astimezone(UTC).replace(tzinfo=None)
+
+
+def _local_text(db_utc: Optional[datetime]) -> str:
+    """Время из базы в строку 'YYYY-MM-DD HH:MM' по Ташкенту."""
+    if db_utc is None:
+        return ""
+    return db_utc.replace(tzinfo=UTC).astimezone(TASHKENT).strftime("%Y-%m-%d %H:%M")
+
+
+def _now_utc_naive() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 class Database:
-    def __init__(self, db_path: Optional[str] = None):
-        self.db_path = db_path or config.DATABASE_PATH
-        # Создаем директорию для базы данных, если её нет
-        os.makedirs(os.path.dirname(os.path.abspath(self.db_path)), exist_ok=True)
+    def __init__(self) -> None:
+        self._pool: Optional[asyncpg.Pool] = None
+
+    # ------------------------------------------------------------------
+    # Подключение и схема
+    # ------------------------------------------------------------------
 
     async def init_db(self) -> None:
-        """Создает таблицы в базе данных при первом запуске."""
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute("PRAGMA journal_mode=WAL;")
+        """Подключается к базе и создаёт таблицы бота. Общие таблицы создаёт Prisma."""
+        if not config.DATABASE_URL:
+            raise RuntimeError("DATABASE_URL не задан: бот работает только с общей базой Postgres")
 
-            # Таблица пользователей (language по умолчанию NULL для онбординга)
-            await db.execute(
+        self._pool = await asyncpg.create_pool(config.DATABASE_URL, min_size=1, max_size=5)
+
+        async with self._pool.acquire() as conn:
+            exists = await conn.fetchval(
+                "SELECT to_regclass('public.\"Appointment\"') IS NOT NULL"
+            )
+            if not exists:
+                raise RuntimeError(
+                    'В базе нет таблицы "Appointment". Сначала выполните в dental_miniapp: npx prisma db push'
+                )
+
+            await conn.execute(
                 """
-                CREATE TABLE IF NOT EXISTS users (
-                    telegram_id INTEGER PRIMARY KEY,
+                CREATE TABLE IF NOT EXISTS bot_users (
+                    telegram_id BIGINT PRIMARY KEY,
                     username TEXT,
                     first_name TEXT,
                     last_name TEXT,
-                    language TEXT DEFAULT NULL,
-                    is_operator_mode INTEGER DEFAULT 0,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    language TEXT,
+                    is_operator_mode BOOLEAN NOT NULL DEFAULT FALSE,
+                    source TEXT,
+                    created_at TIMESTAMP NOT NULL DEFAULT (now() AT TIME ZONE 'UTC'),
+                    updated_at TIMESTAMP NOT NULL DEFAULT (now() AT TIME ZONE 'UTC')
                 );
-                """
-            )
-
-            # Таблица истории сообщений (контекст диалога)
-            await db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS messages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    telegram_id INTEGER NOT NULL,
+                CREATE TABLE IF NOT EXISTS bot_messages (
+                    id BIGSERIAL PRIMARY KEY,
+                    telegram_id BIGINT NOT NULL,
                     role TEXT NOT NULL,
                     content TEXT NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (telegram_id) REFERENCES users (telegram_id)
+                    created_at TIMESTAMP NOT NULL DEFAULT (now() AT TIME ZONE 'UTC')
                 );
-                """
-            )
-
-            # Таблица лидов (заявок на прием)
-            await db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS leads (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    telegram_id INTEGER NOT NULL,
+                CREATE INDEX IF NOT EXISTS bot_messages_user_idx ON bot_messages (telegram_id, id);
+                CREATE TABLE IF NOT EXISTS bot_leads (
+                    id BIGSERIAL PRIMARY KEY,
+                    telegram_id BIGINT NOT NULL,
                     client_name TEXT NOT NULL,
                     phone TEXT NOT NULL,
                     service TEXT,
                     preferred_time TEXT,
                     summary TEXT,
-                    language TEXT DEFAULT 'ru',
-                    status TEXT DEFAULT 'new',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (telegram_id) REFERENCES users (telegram_id)
+                    language TEXT NOT NULL DEFAULT 'ru',
+                    status TEXT NOT NULL DEFAULT 'new',
+                    created_at TIMESTAMP NOT NULL DEFAULT (now() AT TIME ZONE 'UTC'),
+                    updated_at TIMESTAMP NOT NULL DEFAULT (now() AT TIME ZONE 'UTC')
                 );
-                """
-            )
-
-            # Таблица записей на прием (Appointment Lifecycle)
-            await db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS appointments (
-                    id TEXT PRIMARY KEY,
-                    telegram_id INTEGER,
-                    client_name TEXT NOT NULL,
-                    phone TEXT NOT NULL,
-                    doctor TEXT,
-                    service TEXT,
-                    date_time TEXT NOT NULL,
-                    status TEXT DEFAULT 'pending',
-                    source TEXT DEFAULT 'bot',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-                """
-            )
-
-            # Таблица напоминаний (Persistent, Restart-Safe Reminder Engine)
-            await db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS reminders (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    appointment_id TEXT NOT NULL,
-                    type TEXT NOT NULL,
-                    due_at TIMESTAMP NOT NULL,
-                    sent_at TIMESTAMP DEFAULT NULL,
-                    status TEXT DEFAULT 'pending',
-                    attempt_count INTEGER DEFAULT 0,
-                    last_error TEXT DEFAULT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(appointment_id, type)
-                );
-                """
-            )
-            # Лист ожидания: пациент просит сообщить, когда освободится окно
-            await db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS waitlist (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    telegram_id INTEGER NOT NULL,
+                CREATE TABLE IF NOT EXISTS bot_waitlist (
+                    id BIGSERIAL PRIMARY KEY,
+                    telegram_id BIGINT NOT NULL,
                     wanted_date TEXT NOT NULL,
-                    doctor TEXT DEFAULT 'any',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    doctor TEXT NOT NULL DEFAULT 'any',
+                    created_at TIMESTAMP NOT NULL DEFAULT (now() AT TIME ZONE 'UTC')
                 );
-                """
-            )
-
-            # Журнал автоматических рассылок (защита от повторной отправки)
-            await db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS outreach (
+                CREATE TABLE IF NOT EXISTS bot_outreach (
                     item_key TEXT NOT NULL,
                     kind TEXT NOT NULL,
-                    sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    sent_at TIMESTAMP NOT NULL DEFAULT (now() AT TIME ZONE 'UTC'),
                     PRIMARY KEY (item_key, kind)
                 );
                 """
             )
+        logger.info("PostgreSQL подключена, таблицы бота проверены")
 
-            # Источник пациента (deep-link вида t.me/bot?start=instagram)
-            cursor = await db.execute("PRAGMA table_info(users)")
-            user_columns = {row[1] for row in await cursor.fetchall()}
-            if "source" not in user_columns:
-                await db.execute("ALTER TABLE users ADD COLUMN source TEXT DEFAULT NULL;")
+    async def close(self) -> None:
+        if self._pool:
+            await self._pool.close()
+            self._pool = None
 
-            await db.commit()
+    def _p(self) -> asyncpg.Pool:
+        if self._pool is None:
+            raise RuntimeError("База не подключена: сначала вызовите init_db()")
+        return self._pool
+
+    async def _audit(self, conn, appointment_id: str, actor_type: str, action: str,
+                     from_status: Optional[str], to_status: Optional[str], details: Optional[str] = None) -> None:
+        await conn.execute(
+            """
+            INSERT INTO "AuditLog" (id, "appointmentId", "actorType", action, "fromStatus", "toStatus", details, "createdAt")
+            VALUES (gen_random_uuid()::text, $1, $2, $3, $4, $5, $6, now() AT TIME ZONE 'UTC')
+            """,
+            appointment_id, actor_type, action, from_status, to_status, details,
+        )
+
+    # ------------------------------------------------------------------
+    # Пользователи бота
+    # ------------------------------------------------------------------
 
     async def get_or_create_user(
         self,
@@ -147,116 +176,77 @@ class Database:
         first_name: Optional[str] = None,
         last_name: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Возвращает пользователя или создает новую запись."""
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            cursor = await db.execute(
-                "SELECT * FROM users WHERE telegram_id = ?", (telegram_id,)
-            )
-            row = await cursor.fetchone()
-
-            if row:
-                return dict(row)
-
-            # Создаем нового пользователя с language=NULL для языкового онбординга
-            now = datetime.utcnow().isoformat()
-            await db.execute(
+        """Возвращает пользователя или создаёт нового (язык пока пустой, для онбординга)."""
+        async with self._p().acquire() as conn:
+            await conn.execute(
                 """
-                INSERT INTO users (telegram_id, username, first_name, last_name, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO bot_users (telegram_id, username, first_name, last_name)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (telegram_id) DO NOTHING
                 """,
-                (telegram_id, username, first_name, last_name, now, now),
+                telegram_id, username, first_name, last_name,
             )
-            await db.commit()
-
-            cursor = await db.execute(
-                "SELECT * FROM users WHERE telegram_id = ?", (telegram_id,)
-            )
-            new_row = await cursor.fetchone()
-            return dict(new_row) if new_row else {}
+            row = await conn.fetchrow("SELECT * FROM bot_users WHERE telegram_id = $1", telegram_id)
+            return dict(row) if row else {}
 
     async def get_user_language(self, telegram_id: int) -> Optional[str]:
-        """Возвращает сохраненный язык пользователя (ru, uz, en или None)."""
-        async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute(
-                "SELECT language FROM users WHERE telegram_id = ?",
-                (telegram_id,),
+        async with self._p().acquire() as conn:
+            return await conn.fetchval(
+                "SELECT language FROM bot_users WHERE telegram_id = $1", telegram_id
             )
-            row = await cursor.fetchone()
-            if row and row[0]:
-                return row[0]
-            return None
 
     async def update_user_language(self, telegram_id: int, language: str) -> None:
-        """Обновляет предпочитаемый язык пользователя (ru, uz, en)."""
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                "UPDATE users SET language = ?, updated_at = CURRENT_TIMESTAMP WHERE telegram_id = ?",
-                (language, telegram_id),
+        async with self._p().acquire() as conn:
+            await conn.execute(
+                "UPDATE bot_users SET language = $2, updated_at = now() AT TIME ZONE 'UTC' WHERE telegram_id = $1",
+                telegram_id, language,
             )
-            await db.commit()
 
     async def set_operator_mode(self, telegram_id: int, enabled: bool) -> None:
-        """Включает или выключает режим связи с живым оператором."""
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                "UPDATE users SET is_operator_mode = ?, updated_at = CURRENT_TIMESTAMP WHERE telegram_id = ?",
-                (1 if enabled else 0, telegram_id),
+        async with self._p().acquire() as conn:
+            await conn.execute(
+                "UPDATE bot_users SET is_operator_mode = $2, updated_at = now() AT TIME ZONE 'UTC' WHERE telegram_id = $1",
+                telegram_id, enabled,
             )
-            await db.commit()
 
     async def is_operator_mode(self, telegram_id: int) -> bool:
-        """Проверяет, включен ли режим живого оператора у пользователя."""
-        async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute(
-                "SELECT is_operator_mode FROM users WHERE telegram_id = ?",
-                (telegram_id,),
+        async with self._p().acquire() as conn:
+            value = await conn.fetchval(
+                "SELECT is_operator_mode FROM bot_users WHERE telegram_id = $1", telegram_id
             )
-            row = await cursor.fetchone()
-            if row:
-                return bool(row[0])
-            return False
+            return bool(value)
 
     async def save_message(self, telegram_id: int, role: str, content: str) -> None:
-        """Сохраняет сообщение в историю диалога."""
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                "INSERT INTO messages (telegram_id, role, content) VALUES (?, ?, ?)",
-                (telegram_id, role, content),
+        async with self._p().acquire() as conn:
+            await conn.execute(
+                "INSERT INTO bot_messages (telegram_id, role, content) VALUES ($1, $2, $3)",
+                telegram_id, role, content,
             )
-            await db.commit()
 
-    async def get_chat_history(
-        self, telegram_id: int, limit: Optional[int] = None
-    ) -> List[Dict[str, str]]:
-        """
-        Возвращает последние N сообщений диалога для передачи в LLM.
-        Ограничивается коротким контекстом (4-6 сообщений) для молниеносной генерации.
-        """
+    async def get_chat_history(self, telegram_id: int, limit: Optional[int] = None) -> List[Dict[str, str]]:
+        """Последние N сообщений диалога для передачи в LLM."""
         limit = limit or config.HISTORY_LIMIT
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            cursor = await db.execute(
+        async with self._p().acquire() as conn:
+            rows = await conn.fetch(
                 """
                 SELECT role, content FROM (
-                    SELECT id, role, content FROM messages
-                    WHERE telegram_id = ?
+                    SELECT id, role, content FROM bot_messages
+                    WHERE telegram_id = $1
                     ORDER BY id DESC
-                    LIMIT ?
-                ) ORDER BY id ASC
+                    LIMIT $2
+                ) last_messages ORDER BY id ASC
                 """,
-                (telegram_id, limit),
+                telegram_id, limit,
             )
-            rows = await cursor.fetchall()
             return [{"role": row["role"], "content": row["content"]} for row in rows]
 
     async def clear_chat_history(self, telegram_id: int) -> None:
-        """Очищает историю диалога пользователя (для команды /reset или /new)."""
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                "DELETE FROM messages WHERE telegram_id = ?", (telegram_id,)
-            )
-            await db.commit()
+        async with self._p().acquire() as conn:
+            await conn.execute("DELETE FROM bot_messages WHERE telegram_id = $1", telegram_id)
+
+    # ------------------------------------------------------------------
+    # Лиды (заявки из чата и Mini App)
+    # ------------------------------------------------------------------
 
     async def save_lead(
         self,
@@ -268,73 +258,96 @@ class Database:
         summary: Optional[str] = None,
         language: str = "ru",
     ) -> int:
-        """Сохраняет новую карточку лида в базу данных и возвращает ID заявки."""
-        async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute(
+        async with self._p().acquire() as conn:
+            return await conn.fetchval(
                 """
-                INSERT INTO leads (
-                    telegram_id, client_name, phone, service,
-                    preferred_time, summary, language, status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'new')
+                INSERT INTO bot_leads (telegram_id, client_name, phone, service, preferred_time, summary, language, status)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, 'new')
+                RETURNING id
                 """,
-                (
-                    telegram_id,
-                    client_name,
-                    phone,
-                    service or "Консультация",
-                    preferred_time or "Уточняется",
-                    summary or "",
-                    language,
-                ),
+                telegram_id, client_name, phone,
+                service or "Консультация",
+                preferred_time or "Уточняется",
+                summary or "",
+                language,
             )
-            await db.commit()
-            return cursor.lastrowid
 
     async def update_lead_status(self, lead_id: int, status: str) -> bool:
-        """Обновляет статус лида (new, contacted, confirmed, rejected)."""
-        async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute(
-                "UPDATE leads SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (status, lead_id),
+        async with self._p().acquire() as conn:
+            result = await conn.execute(
+                "UPDATE bot_leads SET status = $2, updated_at = now() AT TIME ZONE 'UTC' WHERE id = $1",
+                lead_id, status,
             )
-            await db.commit()
-            return cursor.rowcount > 0
+            return result.endswith("1")
 
     async def get_stats(self) -> Dict[str, int]:
-        """Возвращает общую статистику по пользователям и лидам."""
-        async with aiosqlite.connect(self.db_path) as db:
-            c1 = await db.execute("SELECT COUNT(*) FROM users")
-            total_users = (await c1.fetchone())[0]
-
-            c2 = await db.execute("SELECT COUNT(*) FROM leads")
-            total_leads = (await c2.fetchone())[0]
-
-            c3 = await db.execute(
-                "SELECT COUNT(*) FROM leads WHERE DATE(created_at) = DATE('now')"
+        async with self._p().acquire() as conn:
+            total_users = await conn.fetchval("SELECT COUNT(*) FROM bot_users")
+            total_leads = await conn.fetchval("SELECT COUNT(*) FROM bot_leads")
+            leads_today = await conn.fetchval(
+                "SELECT COUNT(*) FROM bot_leads WHERE created_at >= date_trunc('day', now() AT TIME ZONE 'UTC')"
             )
-            leads_today = (await c3.fetchone())[0]
-
-            return {
-                "total_users": total_users,
-                "total_leads": total_leads,
-                "leads_today": leads_today,
-            }
+            return {"total_users": total_users, "total_leads": total_leads, "leads_today": leads_today}
 
     async def get_recent_leads(self, limit: int = 5) -> List[Dict[str, Any]]:
-        """Возвращает последние лиды."""
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            cursor = await db.execute(
+        async with self._p().acquire() as conn:
+            rows = await conn.fetch(
                 """
                 SELECT id, client_name, phone, service, preferred_time, status, created_at
-                FROM leads
-                ORDER BY id DESC
-                LIMIT ?
+                FROM bot_leads ORDER BY id DESC LIMIT $1
                 """,
-                (limit,),
+                limit,
             )
-            rows = await cursor.fetchall()
             return [dict(row) for row in rows]
+
+    async def anonymize_user_data(self, telegram_id: int) -> None:
+        """Стирает имя и телефон пациента в лидах и записях (по запросу /delete_my_data)."""
+        async with self._p().acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "UPDATE bot_leads SET client_name = 'Анонимизированный пациент', phone = '+998000000000' WHERE telegram_id = $1",
+                    telegram_id,
+                )
+                await conn.execute(
+                    """
+                    UPDATE "Patient" SET name = 'Анонимизированный пациент', phone = '+998000000000',
+                           "telegramId" = NULL, "updatedAt" = now() AT TIME ZONE 'UTC'
+                    WHERE "telegramId" = $1
+                    """,
+                    telegram_id,
+                )
+
+    # ------------------------------------------------------------------
+    # Записи (общие с Mini App)
+    # ------------------------------------------------------------------
+
+    async def _upsert_patient(self, conn, telegram_id: Optional[int], name: str, phone: str) -> str:
+        """Находит пациента по Telegram ID или телефону, иначе создаёт. Возвращает его id."""
+        if telegram_id:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO "Patient" (id, "telegramId", name, phone, "createdAt", "updatedAt")
+                VALUES (gen_random_uuid()::text, $1, $2, $3, now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC')
+                ON CONFLICT ("telegramId") DO UPDATE SET name = EXCLUDED.name, phone = EXCLUDED.phone,
+                       "updatedAt" = now() AT TIME ZONE 'UTC'
+                RETURNING id
+                """,
+                telegram_id, name, phone,
+            )
+            return row["id"]
+
+        row = await conn.fetchrow('SELECT id FROM "Patient" WHERE phone = $1 LIMIT 1', phone)
+        if row:
+            return row["id"]
+        row = await conn.fetchrow(
+            """
+            INSERT INTO "Patient" (id, name, phone, "createdAt", "updatedAt")
+            VALUES (gen_random_uuid()::text, $1, $2, now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC')
+            RETURNING id
+            """,
+            name, phone,
+        )
+        return row["id"]
 
     async def save_appointment(
         self,
@@ -348,248 +361,282 @@ class Database:
         status: str = "pending",
         source: str = "bot",
     ) -> bool:
-        """Сохраняет запись на приём в SQLite."""
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                """
-                INSERT OR REPLACE INTO appointments (
-                    id, telegram_id, client_name, phone, doctor, service, date_time, status, source, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                """,
-                (appointment_id, telegram_id, client_name, phone, doctor, service, date_time, status, source),
-            )
-            await db.commit()
-            return True
+        """Создаёт запись в общей таблице Appointment. False, если время визита не распознано."""
+        visit = _parse_visit_time(date_time)
+        if visit is None:
+            logger.warning("Не удалось разобрать время визита: %r (запись %s не создана)", date_time, appointment_id)
+            return False
+
+        visit_utc = _to_db_utc(visit)
+        async with self._p().acquire() as conn:
+            async with conn.transaction():
+                patient_id = await self._upsert_patient(conn, telegram_id or None, client_name, phone)
+                await conn.execute(
+                    """
+                    INSERT INTO "Appointment" (id, "patientId", "serviceTitle", "doctorName", "dateTime",
+                                               status, source, "createdAt", "updatedAt")
+                    VALUES ($1, $2, $3, $4, $5, $6::"AppointmentStatus", $7,
+                            now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC')
+                    ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status, "dateTime" = EXCLUDED."dateTime",
+                           "updatedAt" = now() AT TIME ZONE 'UTC'
+                    """,
+                    appointment_id, patient_id, service or "Консультация", doctor or "Врач",
+                    visit_utc, status, source,
+                )
+                await self._audit(conn, appointment_id, "bot", "created", None, status, source)
+        return True
+
+    def _appointment_row_to_dict(self, row) -> Dict[str, Any]:
+        data = dict(row)
+        return {
+            "id": data["id"],
+            "telegram_id": data.get("telegram_id"),
+            "client_name": data.get("client_name"),
+            "phone": data.get("phone"),
+            "doctor": data.get("doctor"),
+            "service": data.get("service"),
+            "date_time": _local_text(data.get("date_time_utc")),
+            "status": data.get("status"),
+            "source": data.get("source"),
+        }
+
+    _APPOINTMENT_SELECT = """
+        SELECT a.id, p."telegramId" AS telegram_id, p.name AS client_name, p.phone,
+               a."doctorName" AS doctor, a."serviceTitle" AS service,
+               a."dateTime" AS date_time_utc, a.status::text AS status, a.source
+        FROM "Appointment" a JOIN "Patient" p ON p.id = a."patientId"
+    """
 
     async def get_appointment(self, appointment_id: str) -> Optional[Dict[str, Any]]:
-        """Возвращает данные записи по её ID."""
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            cursor = await db.execute("SELECT * FROM appointments WHERE id = ?", (appointment_id,))
-            row = await cursor.fetchone()
-            return dict(row) if row else None
+        async with self._p().acquire() as conn:
+            row = await conn.fetchrow(self._APPOINTMENT_SELECT + " WHERE a.id = $1", appointment_id)
+            return self._appointment_row_to_dict(row) if row else None
 
     async def update_appointment_status(self, appointment_id: str, status: str) -> bool:
-        """Обновляет статус записи (pending, confirmed, reschedule_requested, cancelled, completed, no_show)."""
-        async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute(
-                "UPDATE appointments SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (status, appointment_id),
-            )
-            if status == "cancelled":
-                await db.execute(
-                    "UPDATE reminders SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE appointment_id = ? AND status = 'pending'",
-                    (appointment_id,),
+        """Меняет статус записи. Для отмены гасит ожидающие напоминания."""
+        async with self._p().acquire() as conn:
+            async with conn.transaction():
+                previous = await conn.fetchval(
+                    'SELECT status::text FROM "Appointment" WHERE id = $1 FOR UPDATE', appointment_id
                 )
-            await db.commit()
-            return cursor.rowcount > 0
-
-    async def schedule_reminder(
-        self,
-        appointment_id: str,
-        reminder_type: str,
-        due_at_iso: str,
-    ) -> bool:
-        """Планирует напоминание (24h или 2h). Перезапуск-безопасно и идемпотентно."""
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                """
-                INSERT OR IGNORE INTO reminders (appointment_id, type, due_at, status)
-                VALUES (?, ?, ?, 'pending')
-                """,
-                (appointment_id, reminder_type, due_at_iso),
-            )
-            await db.commit()
+                if previous is None:
+                    return False
+                await conn.execute(
+                    """
+                    UPDATE "Appointment" SET status = $2::"AppointmentStatus", "updatedAt" = now() AT TIME ZONE 'UTC'
+                    WHERE id = $1
+                    """,
+                    appointment_id, status,
+                )
+                if status == "cancelled":
+                    await conn.execute(
+                        """
+                        UPDATE "Reminder" SET status = 'cancelled', "updatedAt" = now() AT TIME ZONE 'UTC'
+                        WHERE "appointmentId" = $1 AND status = 'pending'
+                        """,
+                        appointment_id,
+                    )
+                await self._audit(conn, appointment_id, "bot", "status_change", previous, status)
             return True
 
-    async def get_due_reminders(self) -> List[Dict[str, Any]]:
-        """Возвращает список напоминаний, готовых к отправке (due_at <= now, status = 'pending')."""
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            cursor = await db.execute(
+    async def schedule_reminder(self, appointment_id: str, reminder_type: str, due_at_iso: str) -> bool:
+        """Ставит напоминание (reminder_24h или reminder_2h). Повторный вызов ничего не меняет."""
+        due = _parse_visit_time(due_at_iso)
+        if due is None:
+            return False
+        async with self._p().acquire() as conn:
+            await conn.execute(
                 """
-                SELECT r.id as reminder_id, r.appointment_id, r.type, r.due_at, r.attempt_count,
-                       a.telegram_id, a.client_name, a.phone, a.doctor, a.service, a.date_time, a.status as app_status
-                FROM reminders r
-                JOIN appointments a ON r.appointment_id = a.id
+                INSERT INTO "Reminder" (id, "appointmentId", type, "dueAt", status, "attemptCount",
+                                        "createdAt", "updatedAt")
+                VALUES (gen_random_uuid()::text, $1, $2::"ReminderType", $3, 'pending', 0,
+                        now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC')
+                ON CONFLICT ("appointmentId", type) DO NOTHING
+                """,
+                appointment_id, reminder_type, _to_db_utc(due),
+            )
+        return True
+
+    async def get_due_reminders(self) -> List[Dict[str, Any]]:
+        """Напоминания, время которых уже наступило, по активным записям с Telegram ID пациента."""
+        async with self._p().acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT r.id AS reminder_id, r."appointmentId" AS appointment_id, r.type::text AS type,
+                       r."dueAt" AS due_at, r."attemptCount" AS attempt_count,
+                       p."telegramId" AS telegram_id, p.name AS client_name, p.phone,
+                       a."doctorName" AS doctor, a."serviceTitle" AS service,
+                       a."dateTime" AS date_time_utc, a.status::text AS app_status
+                FROM "Reminder" r
+                JOIN "Appointment" a ON a.id = r."appointmentId"
+                JOIN "Patient" p ON p.id = a."patientId"
                 WHERE r.status = 'pending'
-                  AND a.status NOT IN ('cancelled', 'completed', 'no_show')
-                  AND datetime(r.due_at) <= datetime('now')
-                ORDER BY r.due_at ASC
+                  AND a.status::text NOT IN ('cancelled', 'completed', 'no_show')
+                  AND r."dueAt" <= (now() AT TIME ZONE 'UTC')
+                ORDER BY r."dueAt" ASC
                 LIMIT 50
                 """
             )
-            rows = await cursor.fetchall()
-            return [dict(row) for row in rows]
+            result = []
+            for row in rows:
+                item = dict(row)
+                item["date_time"] = _local_text(item.pop("date_time_utc"))
+                item["telegram_id"] = int(item["telegram_id"]) if item["telegram_id"] else None
+                result.append(item)
+            return result
 
-    async def mark_reminder_sent(self, reminder_id: int) -> bool:
-        """Отмечает напоминание как успешно отправленное."""
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
+    async def mark_reminder_sent(self, reminder_id: str) -> bool:
+        async with self._p().acquire() as conn:
+            await conn.execute(
                 """
-                UPDATE reminders
-                SET status = 'sent', sent_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
+                UPDATE "Reminder" SET status = 'sent', "sentAt" = now() AT TIME ZONE 'UTC',
+                       "updatedAt" = now() AT TIME ZONE 'UTC'
+                WHERE id = $1
                 """,
-                (reminder_id,),
+                reminder_id,
             )
-            await db.commit()
             return True
 
-    async def mark_reminder_failed(self, reminder_id: int, error_text: str) -> bool:
-        """Фиксирует ошибку отправки напоминания (например, бот заблокирован)."""
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
+    async def mark_reminder_failed(self, reminder_id: str, error_text: str) -> bool:
+        async with self._p().acquire() as conn:
+            await conn.execute(
                 """
-                UPDATE reminders
-                SET status = 'failed', attempt_count = attempt_count + 1, last_error = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
+                UPDATE "Reminder" SET status = 'failed', "attemptCount" = "attemptCount" + 1,
+                       "lastError" = $2, "updatedAt" = now() AT TIME ZONE 'UTC'
+                WHERE id = $1
                 """,
-                (error_text, reminder_id),
+                reminder_id, error_text,
             )
-            await db.commit()
             return True
 
     async def get_urgent_unconfirmed_appointments(self) -> List[Dict[str, Any]]:
-        """
-        Находит визиты, до которых осталось <= 2 часов, но пациент до сих пор в статусе 'pending'.
-        Используется для мгновенного алерта администратору.
-        """
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            cursor = await db.execute(
-                """
-                SELECT * FROM appointments
-                WHERE status = 'pending'
-                  AND datetime(date_time) <= datetime('now', '+2 hours')
-                  AND datetime(date_time) >= datetime('now')
-                """
+        """Визиты через 2 часа и меньше, которые пациент так и не подтвердил."""
+        now = _now_utc_naive()
+        async with self._p().acquire() as conn:
+            rows = await conn.fetch(
+                self._APPOINTMENT_SELECT
+                + """
+                WHERE a.status = 'pending'
+                  AND a."dateTime" >= $1 AND a."dateTime" <= $2
+                """,
+                now, now + timedelta(hours=2),
             )
-            rows = await cursor.fetchall()
-            return [dict(row) for row in rows]
+            return [self._appointment_row_to_dict(row) for row in rows]
 
     # ------------------------------------------------------------------
-    # Growth features: sources, digest, waitlist, outreach log
+    # Рост: источники, дайджест, лист ожидания, рассылки
     # ------------------------------------------------------------------
 
     async def set_user_source(self, telegram_id: int, source: str) -> None:
         """Запоминает источник первого прихода; существующий источник не перезаписывает."""
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                "UPDATE users SET source = ? WHERE telegram_id = ? AND source IS NULL",
-                (source, telegram_id),
+        async with self._p().acquire() as conn:
+            await conn.execute(
+                "UPDATE bot_users SET source = $2 WHERE telegram_id = $1 AND source IS NULL",
+                telegram_id, source,
             )
-            await db.commit()
 
     async def get_sources_breakdown(self) -> List[Dict[str, Any]]:
-        """Сколько пациентов пришло из каждого источника."""
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            cursor = await db.execute(
+        async with self._p().acquire() as conn:
+            rows = await conn.fetch(
                 """
                 SELECT COALESCE(source, 'direct') AS source, COUNT(*) AS total
-                FROM users
-                GROUP BY COALESCE(source, 'direct')
-                ORDER BY total DESC
+                FROM bot_users GROUP BY COALESCE(source, 'direct') ORDER BY total DESC
                 """
             )
-            return [dict(row) for row in await cursor.fetchall()]
+            return [dict(row) for row in rows]
 
     async def get_digest_stats(self, days: int = 7) -> Dict[str, int]:
-        """Реальные цифры записей за период (вместо захардкоженных значений)."""
-        async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute(
+        """Цифры записей за период, по дате создания."""
+        async with self._p().acquire() as conn:
+            row = await conn.fetchrow(
                 """
-                SELECT
-                    COUNT(*),
-                    SUM(CASE WHEN status IN ('confirmed', 'completed') THEN 1 ELSE 0 END),
-                    SUM(CASE WHEN status = 'no_show' THEN 1 ELSE 0 END),
-                    SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END)
-                FROM appointments
-                WHERE created_at >= datetime('now', ?)
+                SELECT COUNT(*) AS total,
+                       COUNT(*) FILTER (WHERE status::text IN ('confirmed', 'completed')) AS confirmed,
+                       COUNT(*) FILTER (WHERE status::text = 'no_show') AS no_show,
+                       COUNT(*) FILTER (WHERE status::text = 'cancelled') AS cancelled
+                FROM "Appointment"
+                WHERE "createdAt" >= (now() AT TIME ZONE 'UTC') - make_interval(days => $1)
                 """,
-                (f"-{int(days)} days",),
+                int(days),
             )
-            total, confirmed, no_show, cancelled = [v or 0 for v in await cursor.fetchone()]
-            return {"total": total, "confirmed": confirmed, "no_show": no_show, "cancelled": cancelled}
+            return {k: int(row[k] or 0) for k in ("total", "confirmed", "no_show", "cancelled")}
 
     async def count_appointments_on(self, date_prefix: str) -> int:
-        """Количество активных записей на дату (формат YYYY-MM-DD)."""
-        async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute(
-                "SELECT COUNT(*) FROM appointments WHERE date_time LIKE ? AND status != 'cancelled'",
-                (f"{date_prefix}%",),
+        """Активные записи на дату по Ташкенту (формат YYYY-MM-DD)."""
+        async with self._p().acquire() as conn:
+            return await conn.fetchval(
+                """
+                SELECT COUNT(*) FROM "Appointment"
+                WHERE to_char(("dateTime" AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Tashkent', 'YYYY-MM-DD') = $1
+                  AND status::text <> 'cancelled'
+                """,
+                date_prefix,
             )
-            return (await cursor.fetchone())[0]
 
     async def mark_outreach(self, item_key: str, kind: str) -> bool:
-        """Возвращает True, если отметка поставлена впервые. Так каждое сообщение уходит один раз."""
-        async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute(
-                "INSERT OR IGNORE INTO outreach (item_key, kind) VALUES (?, ?)",
-                (item_key, kind),
+        """True, если отметка поставлена впервые: так каждое сообщение уходит один раз."""
+        async with self._p().acquire() as conn:
+            result = await conn.execute(
+                "INSERT INTO bot_outreach (item_key, kind) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                item_key, kind,
             )
-            await db.commit()
-            return cursor.rowcount > 0
+            return result.endswith("1")
 
     async def get_review_candidates(self) -> List[Dict[str, Any]]:
-        """Визиты, прошедшие 2+ часа назад (не отменённые и не неявки), ещё без просьбы об отзыве."""
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            cursor = await db.execute(
+        """Визиты 2+ часа назад (не отменённые) за последние 3 дня: просим отзыв."""
+        now = _now_utc_naive()
+        async with self._p().acquire() as conn:
+            rows = await conn.fetch(
                 """
-                SELECT id, telegram_id, service, date_time FROM appointments
-                WHERE status IN ('confirmed', 'completed')
-                  AND telegram_id IS NOT NULL AND telegram_id != 0
-                  AND datetime(date_time) <= datetime('now', '-2 hours')
-                  AND datetime(date_time) >= datetime('now', '-3 days')
-                """
+                SELECT a.id, p."telegramId" AS telegram_id, a."serviceTitle" AS service,
+                       a."dateTime" AS date_time_utc
+                FROM "Appointment" a JOIN "Patient" p ON p.id = a."patientId"
+                WHERE a.status::text IN ('confirmed', 'completed')
+                  AND p."telegramId" IS NOT NULL
+                  AND a."dateTime" <= $1 AND a."dateTime" >= $2
+                """,
+                now - timedelta(hours=2), now - timedelta(days=3),
             )
-            return [dict(row) for row in await cursor.fetchall()]
+            return [{"id": r["id"], "telegram_id": int(r["telegram_id"]), "service": r["service"],
+                     "date_time": _local_text(r["date_time_utc"])} for r in rows]
 
     async def get_recall_candidates(self) -> List[Dict[str, Any]]:
         """Пациенты, у которых последний визит был 180+ дней назад."""
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            cursor = await db.execute(
+        cutoff = _now_utc_naive() - timedelta(days=180)
+        async with self._p().acquire() as conn:
+            rows = await conn.fetch(
                 """
-                SELECT telegram_id, MAX(date_time) AS last_visit FROM appointments
-                WHERE status IN ('confirmed', 'completed')
-                  AND telegram_id IS NOT NULL AND telegram_id != 0
-                GROUP BY telegram_id
-                HAVING datetime(MAX(date_time)) <= datetime('now', '-180 days')
-                """
+                SELECT p."telegramId" AS telegram_id, MAX(a."dateTime") AS last_visit_utc
+                FROM "Appointment" a JOIN "Patient" p ON p.id = a."patientId"
+                WHERE a.status::text IN ('confirmed', 'completed') AND p."telegramId" IS NOT NULL
+                GROUP BY p."telegramId"
+                HAVING MAX(a."dateTime") <= $1
+                """,
+                cutoff,
             )
-            return [dict(row) for row in await cursor.fetchall()]
+            return [{"telegram_id": int(r["telegram_id"]), "last_visit": _local_text(r["last_visit_utc"])}
+                    for r in rows]
 
     async def add_waitlist(self, telegram_id: int, wanted_date: str, doctor: str = "any") -> None:
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                "INSERT INTO waitlist (telegram_id, wanted_date, doctor) VALUES (?, ?, ?)",
-                (telegram_id, wanted_date, doctor),
+        async with self._p().acquire() as conn:
+            await conn.execute(
+                "INSERT INTO bot_waitlist (telegram_id, wanted_date, doctor) VALUES ($1, $2, $3)",
+                telegram_id, wanted_date, doctor,
             )
-            await db.commit()
 
     async def pop_waitlist_for(self, date_prefix: str, doctor: str) -> List[Dict[str, Any]]:
         """Забирает людей из листа ожидания на дату, подходящих под врача (или 'any')."""
-        async with aiosqlite.connect(self.db_path) as db:
-            db.row_factory = aiosqlite.Row
-            cursor = await db.execute(
-                """
-                SELECT * FROM waitlist
-                WHERE wanted_date = ? AND (doctor = 'any' OR doctor = ?)
-                ORDER BY created_at
-                """,
-                (date_prefix, doctor),
-            )
-            rows = [dict(row) for row in await cursor.fetchall()]
-            if rows:
-                ids = [row["id"] for row in rows]
-                await db.execute(
-                    f"DELETE FROM waitlist WHERE id IN ({','.join('?' * len(ids))})", ids
+        async with self._p().acquire() as conn:
+            async with conn.transaction():
+                rows = await conn.fetch(
+                    """
+                    DELETE FROM bot_waitlist
+                    WHERE wanted_date = $1 AND (doctor = 'any' OR doctor = $2)
+                    RETURNING id, telegram_id, wanted_date, doctor, created_at
+                    """,
+                    date_prefix, doctor,
                 )
-                await db.commit()
-            return rows
+            return [dict(r) for r in sorted(rows, key=lambda r: r["created_at"])]
 
 
 db = Database()

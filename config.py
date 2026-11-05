@@ -36,10 +36,8 @@ class Config:
     OPENAI_BASE_URL: Optional[str] = os.getenv("OPENAI_BASE_URL") or None
     OPENAI_MODEL: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip()
 
-    # Путь к SQLite базе данных
-    DATABASE_PATH: str = os.getenv(
-        "DATABASE_PATH", str(BASE_DIR / "data" / "dental_bot.db")
-    )
+    # Общая база PostgreSQL (та же, что у Mini App). Берётся из переменных Railway.
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "").strip()
 
     # Google Sheets интеграция
     GOOGLE_SHEETS_CREDENTIALS_FILE: str = os.getenv(

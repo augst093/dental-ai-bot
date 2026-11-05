@@ -12,8 +12,6 @@ Growth and retention jobs for DentaLux.
 import asyncio
 import logging
 import os
-import sqlite3
-import tempfile
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -22,7 +20,7 @@ from aiogram import Bot
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramForbiddenError
 from aiogram.types import (
-    BufferedInputFile,
+
     InlineKeyboardButton,
     InlineKeyboardMarkup,
 )
@@ -260,36 +258,6 @@ async def notify_waitlist(bot: Bot, date_time: str, doctor: str) -> None:
 # Backup
 # ----------------------------------------------------------------------
 
-async def send_backup(bot: Bot) -> None:
-    """Копия SQLite-базы в админ-чат. Содержит персональные данные: чат должен быть закрытым."""
-    if not config.ADMIN_CHAT_ID:
-        return
-    fd, temp_path = tempfile.mkstemp(suffix=".db")
-    os.close(fd)
-
-    def _copy() -> None:
-        source = sqlite3.connect(config.DATABASE_PATH)
-        target = sqlite3.connect(temp_path)
-        try:
-            source.backup(target)
-        finally:
-            target.close()
-            source.close()
-
-    try:
-        await asyncio.to_thread(_copy)
-        with open(temp_path, "rb") as handle:
-            payload = handle.read()
-        stamp = now_tashkent().strftime("%Y-%m-%d")
-        await bot.send_document(
-            config.ADMIN_CHAT_ID,
-            BufferedInputFile(payload, filename=f"dentalux_backup_{stamp}.db"),
-            caption=f"💾 Ежедневная резервная копия базы · {stamp}",
-        )
-    finally:
-        os.remove(temp_path)
-
-
 # ----------------------------------------------------------------------
 # Worker
 # ----------------------------------------------------------------------
@@ -323,10 +291,6 @@ class GrowthWorker:
                 text = f"{text}\n\n📅 <b>Сегодня записей:</b> {today}"
                 if config.ADMIN_CHAT_ID:
                     await bot.send_message(config.ADMIN_CHAT_ID, text, parse_mode=ParseMode.HTML)
-
-        if now.hour == 3 and now.minute < 10:
-            if await db.mark_outreach(f"backup:{now:%Y-%m-%d}", "backup"):
-                await send_backup(bot)
 
         await send_review_requests(bot)
         await send_recalls(bot)
