@@ -44,6 +44,7 @@ from templates import (
 )
 from services.ai_service import ai_service
 from services.tg_format import to_telegram_html
+from booking_handlers import register_booking_handlers
 from services.notifier import notifier, get_tashkent_time_str
 from services.sheets_service import sheets_service
 from services.reminder_service import reminder_engine
@@ -429,6 +430,10 @@ async def handle_nav_operator(callback: types.CallbackQuery):
     )
     text = OPERATOR_MODE_TEMPLATES.get(lang, OPERATOR_MODE_TEMPLATES["ru"])
     await _show_screen(callback, text, get_back_home_keyboard(lang))
+
+
+# Запись на приём, каталог и «Мои записи» из общей базы (регистрируется до общего обработчика текста)
+register_booking_handlers(dp)
 
 
 # =========================================================================

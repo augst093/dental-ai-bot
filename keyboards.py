@@ -153,7 +153,7 @@ def get_services_catalog_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
             InlineKeyboardButton(text=lbl["pediatric"], callback_data="svc:pediatric"),
         ],
         [
-            InlineKeyboardButton(text=lbl["book"], callback_data="book_prompt"),
+            InlineKeyboardButton(text=lbl["book"], callback_data="bk:start"),
         ],
         [
             InlineKeyboardButton(text=HOME_LABELS.get(lang, HOME_LABELS["ru"])["back"], callback_data="nav:home"),
@@ -181,7 +181,7 @@ def get_service_detail_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
     lbl = labels.get(lang, labels["ru"])
     buttons = [
         [
-            InlineKeyboardButton(text=lbl["book"], callback_data="book_prompt"),
+            InlineKeyboardButton(text=lbl["book"], callback_data="bk:start"),
         ],
         [
             InlineKeyboardButton(text=lbl["back"], callback_data="services_catalog"),
@@ -215,7 +215,7 @@ def get_contacts_inline_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
             ),
         ],
         [
-            InlineKeyboardButton(text=lbl["book"], callback_data="book_prompt"),
+            InlineKeyboardButton(text=lbl["book"], callback_data="bk:start"),
         ],
         [
             InlineKeyboardButton(text=HOME_LABELS.get(lang, HOME_LABELS["ru"])["back"], callback_data="nav:home"),
@@ -227,6 +227,8 @@ def get_contacts_inline_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
 # 6. Главный экран бота в виде инлайн-меню: разделы открываются в том же сообщении
 HOME_LABELS = {
     "ru": {
+        "doctors": "👨‍⚕️ Врачи",
+        "my": "📋 Мои записи",
         "services": "🦷 Услуги и цены",
         "contacts": "📍 Адрес и контакты",
         "about": "⭐️ О клинике и врачах",
@@ -236,6 +238,8 @@ HOME_LABELS = {
         "back": "◀️ В главное меню",
     },
     "uz": {
+        "doctors": "👨‍⚕️ Shifokorlar",
+        "my": "📋 Mening yozuvlarim",
         "services": "🦷 Xizmatlar va narxlar",
         "contacts": "📍 Manzil va aloqa",
         "about": "⭐️ Klinika haqida",
@@ -245,6 +249,8 @@ HOME_LABELS = {
         "back": "◀️ Bosh menyuga",
     },
     "en": {
+        "doctors": "👨‍⚕️ Doctors",
+        "my": "📋 My appointments",
         "services": "🦷 Services & Prices",
         "contacts": "📍 Address & Contacts",
         "about": "⭐️ About Clinic & Doctors",
@@ -259,9 +265,13 @@ HOME_LABELS = {
 def get_home_inline_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
     lbl = HOME_LABELS.get(lang, HOME_LABELS["ru"])
     buttons = [
-        [InlineKeyboardButton(text=lbl["booking"], callback_data="book_prompt")],
+        [InlineKeyboardButton(text=lbl["booking"], callback_data="bk:start")],
         [
-            InlineKeyboardButton(text=lbl["services"], callback_data="services_catalog"),
+            InlineKeyboardButton(text=lbl["services"], callback_data="catalog_db"),
+            InlineKeyboardButton(text=lbl["doctors"], callback_data="nav:doctors"),
+        ],
+        [
+            InlineKeyboardButton(text=lbl["my"], callback_data="nav:my"),
             InlineKeyboardButton(text=lbl["contacts"], callback_data="nav:contacts"),
         ],
         [

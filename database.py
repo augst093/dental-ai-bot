@@ -321,6 +321,157 @@ class Database:
     # Записи (общие с Mini App)
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Каталог из общей базы и запись из бота (таблицы Doctor, Service, Appointment)
+    # ------------------------------------------------------------------
+
+    async def fetch_active_doctors(self) -> List[Dict[str, Any]]:
+        async with self._p().acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, name, specialty, "experienceYears" AS experience_years, "photoUrl" AS photo_url,
+                       "workingDays" AS working_days, "workingHoursStart" AS hours_start,
+                       "workingHoursEnd" AS hours_end, "slotDurationMinutes" AS slot_minutes
+                FROM "Doctor" WHERE "isActive" = true ORDER BY name
+                """
+            )
+            return [dict(r) for r in rows]
+
+    async def fetch_active_services(self) -> List[Dict[str, Any]]:
+        async with self._p().acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, title, category, "priceUzs" AS price_uzs, "durationMinutes" AS duration_minutes,
+                       description
+                FROM "Service" WHERE "isActive" = true ORDER BY "sortOrder", title
+                """
+            )
+            return [dict(r) for r in rows]
+
+    async def fetch_busy_utc(self, doctor_id: str, start_utc: datetime, end_utc: datetime) -> List[datetime]:
+        """Занятые времена врача за интервал (aware UTC). Учитываются только активные записи."""
+        async with self._p().acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT "dateTime" FROM "Appointment"
+                WHERE "doctorId" = $1 AND "dateTime" >= $2 AND "dateTime" < $3
+                  AND status::text = ANY($4::text[])
+                """,
+                doctor_id, _to_db_utc(start_utc), _to_db_utc(end_utc), list(ACTIVE_STATUSES),
+            )
+            return [r["dateTime"].replace(tzinfo=UTC) for r in rows]
+
+    async def list_my_appointments(self, telegram_id: int) -> List[Dict[str, Any]]:
+        """Будущие активные записи пациента (по Telegram ID), ближайшие первыми."""
+        async with self._p().acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT a.id, a."serviceTitle" AS service, a."doctorName" AS doctor, a."doctorId" AS doctor_id,
+                       a."serviceId" AS service_id, a."dateTime" AS visit_utc, a.status::text AS status
+                FROM "Appointment" a JOIN "Patient" p ON p.id = a."patientId"
+                WHERE p."telegramId" = $1 AND a."dateTime" >= now() AT TIME ZONE 'UTC'
+                  AND a.status::text = ANY($2::text[])
+                ORDER BY a."dateTime" LIMIT 10
+                """,
+                telegram_id, list(ACTIVE_STATUSES),
+            )
+            result = []
+            for r in rows:
+                item = dict(r)
+                item["visit_utc"] = item["visit_utc"].replace(tzinfo=UTC)
+                result.append(item)
+            return result
+
+    async def book_slot(
+        self,
+        *,
+        appointment_id: str,
+        telegram_id: int,
+        client_name: str,
+        phone: str,
+        doctor_id: str,
+        doctor_name: str,
+        service_id: Optional[str],
+        service_title: str,
+        price_uzs: Optional[int],
+        duration_minutes: int,
+        visit_utc: datetime,
+    ) -> str:
+        """Создаёт запись, если слот свободен. Возвращает 'ok' или 'taken'.
+        Блокировка по врачу и времени не даёт двум пациентам занять один слот одновременно."""
+        visit_db = _to_db_utc(visit_utc)
+        async with self._p().acquire() as conn:
+            async with conn.transaction():
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"{doctor_id}|{visit_db.isoformat()}")
+                taken = await conn.fetchval(
+                    'SELECT 1 FROM "Appointment" WHERE "doctorId" = $1 AND "dateTime" = $2 AND status::text = ANY($3::text[])',
+                    doctor_id, visit_db, list(ACTIVE_STATUSES),
+                )
+                if taken:
+                    return "taken"
+                patient_id = await self._upsert_patient(conn, telegram_id or None, client_name, phone)
+                # Согласие на обработку персональных данных фиксируем с временем (как в Mini App)
+                await conn.execute(
+                    'UPDATE "Patient" SET "consentAt" = COALESCE("consentAt", now() AT TIME ZONE \'UTC\') WHERE id = $1',
+                    patient_id,
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO "Appointment" (id, "patientId", "doctorId", "serviceId", "serviceTitle", "priceUzs",
+                                               "doctorName", "dateTime", "durationMinutes", status, source,
+                                               "createdAt", "updatedAt")
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending'::"AppointmentStatus", 'bot',
+                            now() AT TIME ZONE 'UTC', now() AT TIME ZONE 'UTC')
+                    """,
+                    appointment_id, patient_id, doctor_id, service_id, service_title, price_uzs,
+                    doctor_name, visit_db, duration_minutes,
+                )
+                await self._audit(conn, appointment_id, "bot", "created", None, "pending", "bot")
+        return "ok"
+
+    async def reschedule_slot(self, *, appointment_id: str, telegram_id: int, new_visit_utc: datetime) -> str:
+        """Переносит запись на новый слот того же врача. 'ok', 'taken' или 'not_found' (не владелец / нет записи)."""
+        new_db = _to_db_utc(new_visit_utc)
+        async with self._p().acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """
+                    SELECT a."doctorId" AS doctor_id, a.status::text AS status, a."dateTime" AS old_dt
+                    FROM "Appointment" a JOIN "Patient" p ON p.id = a."patientId"
+                    WHERE a.id = $1 AND p."telegramId" = $2 FOR UPDATE OF a
+                    """,
+                    appointment_id, telegram_id,
+                )
+                if row is None:
+                    return "not_found"
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"{row['doctor_id']}|{new_db.isoformat()}")
+                taken = await conn.fetchval(
+                    """
+                    SELECT 1 FROM "Appointment"
+                    WHERE "doctorId" = $1 AND "dateTime" = $2 AND id <> $3 AND status::text = ANY($4::text[])
+                    """,
+                    row["doctor_id"], new_db, appointment_id, list(ACTIVE_STATUSES),
+                )
+                if taken:
+                    return "taken"
+                await conn.execute(
+                    """
+                    UPDATE "Appointment" SET "dateTime" = $2, status = 'pending'::"AppointmentStatus",
+                           "updatedAt" = now() AT TIME ZONE 'UTC'
+                    WHERE id = $1
+                    """,
+                    appointment_id, new_db,
+                )
+                await conn.execute(
+                    """
+                    UPDATE "Reminder" SET status = 'cancelled', "updatedAt" = now() AT TIME ZONE 'UTC'
+                    WHERE "appointmentId" = $1 AND status = 'pending'
+                    """,
+                    appointment_id,
+                )
+                await self._audit(conn, appointment_id, "bot", "rescheduled", row["status"], "pending", "bot")
+        return "ok"
+
     async def _upsert_patient(self, conn, telegram_id: Optional[int], name: str, phone: str) -> str:
         """Находит пациента по Telegram ID или телефону, иначе создаёт. Возвращает его id."""
         if telegram_id:
