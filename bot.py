@@ -43,6 +43,7 @@ from templates import (
     LANGUAGE_CHANGED_TEMPLATES,
 )
 from services.ai_service import ai_service
+from services.tg_format import to_telegram_html
 from services.notifier import notifier, get_tashkent_time_str
 from services.sheets_service import sheets_service
 from services.reminder_service import reminder_engine
@@ -1091,7 +1092,7 @@ async def handle_user_arbitrary_text(message: types.Message):
         # 3. Отправляем лаконичный ответ пациенту
         if ai_res.text:
             await message.answer(
-                text=ai_res.text,
+                text=to_telegram_html(ai_res.text),
                 parse_mode=ParseMode.HTML,
                 reply_markup=get_main_menu_keyboard(lang),
             )
