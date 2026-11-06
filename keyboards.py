@@ -155,6 +155,9 @@ def get_services_catalog_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton(text=lbl["book"], callback_data="book_prompt"),
         ],
+        [
+            InlineKeyboardButton(text=HOME_LABELS.get(lang, HOME_LABELS["ru"])["back"], callback_data="nav:home"),
+        ],
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -214,5 +217,64 @@ def get_contacts_inline_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton(text=lbl["book"], callback_data="book_prompt"),
         ],
+        [
+            InlineKeyboardButton(text=HOME_LABELS.get(lang, HOME_LABELS["ru"])["back"], callback_data="nav:home"),
+        ],
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+# 6. Главный экран бота в виде инлайн-меню: разделы открываются в том же сообщении
+HOME_LABELS = {
+    "ru": {
+        "services": "🦷 Услуги и цены",
+        "contacts": "📍 Адрес и контакты",
+        "about": "⭐️ О клинике и врачах",
+        "booking": "📅 Записаться на консультацию",
+        "operator": "📞 Позвать администратора",
+        "lang": "🌐 Сменить язык",
+        "back": "◀️ В главное меню",
+    },
+    "uz": {
+        "services": "🦷 Xizmatlar va narxlar",
+        "contacts": "📍 Manzil va aloqa",
+        "about": "⭐️ Klinika haqida",
+        "booking": "📅 Qabulga yozilish",
+        "operator": "📞 Operator bilan bog'lanish",
+        "lang": "🌐 Tilni o'zgartirish",
+        "back": "◀️ Bosh menyuga",
+    },
+    "en": {
+        "services": "🦷 Services & Prices",
+        "contacts": "📍 Address & Contacts",
+        "about": "⭐️ About Clinic & Doctors",
+        "booking": "📅 Book an Appointment",
+        "operator": "📞 Call Operator",
+        "lang": "🌐 Change Language",
+        "back": "◀️ Back to menu",
+    },
+}
+
+
+def get_home_inline_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
+    lbl = HOME_LABELS.get(lang, HOME_LABELS["ru"])
+    buttons = [
+        [InlineKeyboardButton(text=lbl["booking"], callback_data="book_prompt")],
+        [
+            InlineKeyboardButton(text=lbl["services"], callback_data="services_catalog"),
+            InlineKeyboardButton(text=lbl["contacts"], callback_data="nav:contacts"),
+        ],
+        [
+            InlineKeyboardButton(text=lbl["about"], callback_data="nav:about"),
+            InlineKeyboardButton(text=lbl["operator"], callback_data="nav:operator"),
+        ],
+        [InlineKeyboardButton(text=lbl["lang"], callback_data="nav:lang")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_back_home_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
+    lbl = HOME_LABELS.get(lang, HOME_LABELS["ru"])
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text=lbl["back"], callback_data="nav:home")]]
+    )

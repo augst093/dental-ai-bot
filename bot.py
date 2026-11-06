@@ -26,6 +26,8 @@ from keyboards import (
     get_services_catalog_keyboard,
     get_service_detail_keyboard,
     get_contacts_inline_keyboard,
+    get_home_inline_keyboard,
+    get_back_home_keyboard,
     MENU_BUTTON_TEXTS,
     MINIAPP_URL,
 )
@@ -358,6 +360,74 @@ async def handle_cb_book_prompt(callback: types.CallbackQuery):
         reply_markup=get_main_menu_keyboard(lang),
     )
     await callback.answer()
+
+
+# =========================================================================
+# 3b. ИНЛАЙН-МЕНЮ: разделы открываются в том же сообщении, без лишних
+# =========================================================================
+
+async def _show_screen(callback: types.CallbackQuery, text: str, markup) -> None:
+    """Меняет текущее сообщение на экран раздела; если нельзя (например, фото или старое), шлёт новое."""
+    try:
+        await callback.message.edit_text(text=text, parse_mode=ParseMode.HTML, reply_markup=markup)
+    except Exception:
+        await callback.message.answer(text=text, parse_mode=ParseMode.HTML, reply_markup=markup)
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "nav:home")
+async def handle_nav_home(callback: types.CallbackQuery):
+    """Возврат на главный экран инлайн-меню."""
+    user = callback.from_user
+    lang = await get_user_lang(user.id)
+    name = user.first_name or ("Пациент" if lang == "ru" else "Bemor" if lang == "uz" else "Patient")
+    text = GREETING_TEMPLATES.get(lang, GREETING_TEMPLATES["ru"]).format(name=name)
+    await _show_screen(callback, text, get_home_inline_keyboard(lang))
+
+
+@dp.message(Command("menu"))
+async def handle_menu_command(message: types.Message):
+    """/menu: главное инлайн-меню, разделы открываются в одном сообщении."""
+    user = message.from_user
+    lang = await get_user_lang(user.id)
+    name = user.first_name or ("Пациент" if lang == "ru" else "Bemor" if lang == "uz" else "Patient")
+    text = GREETING_TEMPLATES.get(lang, GREETING_TEMPLATES["ru"]).format(name=name)
+    await message.answer(text=text, parse_mode=ParseMode.HTML, reply_markup=get_home_inline_keyboard(lang))
+
+
+@dp.callback_query(F.data == "nav:contacts")
+async def handle_nav_contacts(callback: types.CallbackQuery):
+    lang = await get_user_lang(callback.from_user.id)
+    await _show_screen(callback, CONTACTS_TEMPLATES.get(lang, CONTACTS_TEMPLATES["ru"]), get_contacts_inline_keyboard(lang))
+
+
+@dp.callback_query(F.data == "nav:about")
+async def handle_nav_about(callback: types.CallbackQuery):
+    lang = await get_user_lang(callback.from_user.id)
+    await _show_screen(callback, ABOUT_TEMPLATES.get(lang, ABOUT_TEMPLATES["ru"]), get_back_home_keyboard(lang))
+
+
+@dp.callback_query(F.data == "nav:lang")
+async def handle_nav_lang(callback: types.CallbackQuery):
+    await _show_screen(callback, LANGUAGE_SELECT_TEXT, get_language_inline_keyboard())
+
+
+@dp.callback_query(F.data == "nav:operator")
+async def handle_nav_operator(callback: types.CallbackQuery):
+    """Вызов администратора из инлайн-меню (та же логика, что у кнопки в reply-меню)."""
+    user = callback.from_user
+    lang = await get_user_lang(user.id)
+    await db.set_operator_mode(user.id, True)
+    user_label = f"{user.first_name or ''} {user.last_name or ''}".strip() or "Пациент"
+    await notifier.notify_operator_request(
+        telegram_id=user.id,
+        user_name=user_label,
+        username=user.username,
+        reason="Клик по кнопке 'Позвать администратора' (инлайн-меню)",
+        last_message="Клик по инлайн-кнопке вызова оператора",
+    )
+    text = OPERATOR_MODE_TEMPLATES.get(lang, OPERATOR_MODE_TEMPLATES["ru"])
+    await _show_screen(callback, text, get_back_home_keyboard(lang))
 
 
 # =========================================================================
